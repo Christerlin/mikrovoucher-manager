@@ -19,7 +19,7 @@ export function layout(title, body, { active = "", autorefresh = false } = {}) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)} — Mikrovoucher</title>
+<title>${esc(title)} · Mikrovoucher</title>
 <style>
 :root{
   --paper:#f2e6cf; --card:#fffaf0; --ink:#241b13; --ink-soft:#8a7455;
@@ -61,7 +61,8 @@ button,.btn{display:inline-block;padding:9px 18px;border:0;border-radius:999px;
   text-decoration:none;text-transform:uppercase;letter-spacing:.04em}
 button:hover,.btn:hover{background:var(--accent-dark)}
 button.ghost,.btn.ghost{background:transparent;color:var(--accent);border:1.5px solid var(--line)}
-button.danger{background:transparent;color:var(--err);border:1.5px solid var(--line);text-transform:none}
+button.danger{background:var(--err);color:#fff;border:0}
+button.danger:hover{background:#7a2117}
 form.inline{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
 form.inline label{display:flex;flex-direction:column;gap:4px;font-size:11px;
   letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:700}

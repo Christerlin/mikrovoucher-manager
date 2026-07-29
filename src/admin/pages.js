@@ -42,7 +42,7 @@ adminRouter.get("/admin/routers", requireAdmin, async (req, res) => {
       <td><a href="/admin/routers/${r.id}"><strong>${esc(r.name)}</strong></a></td>
       <td class="mono">${esc(r.slug)}</td>
       <td>${onlinePill(r.last_seen)}</td>
-      <td>${r.pending_commands > 0 ? `<span class="pill wait">${r.pending_commands} en file</span>` : "—"}</td>
+      <td>${r.pending_commands > 0 ? `<span class="pill wait">${r.pending_commands} en file</span>` : "–"}</td>
     </tr>`).join("");
 
   res.type("html").send(layout("Routeurs", `
@@ -51,7 +51,7 @@ adminRouter.get("/admin/routers", requireAdmin, async (req, res) => {
     <div class="card">
       <table>
         <tr><th>Nom</th><th>Slug</th><th>État</th><th>Commandes</th></tr>
-        ${rows || `<tr><td colspan="4" style="color:var(--ink-soft)">Aucun routeur — ajoutez le premier ci-dessous.</td></tr>`}
+        ${rows || `<tr><td colspan="4" style="color:var(--ink-soft)">Aucun routeur. Ajoutez le premier ci-dessous.</td></tr>`}
       </table>
     </div>
     <div class="card">
@@ -92,7 +92,7 @@ adminRouter.post("/admin/routers/:id/delete", requireAdmin, async (req, res) => 
 function agentRsc(router, base) {
   const host = base.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
   return `# =====================================================================
-# Mikrovoucher — agent pour "${router.name}" (genere par le dashboard)
+# Mikrovoucher : agent pour "${router.name}" (genere par le dashboard)
 # RouterOS v7. Importer sur le routeur : /import mikrovoucher-agent.rsc
 # Prerequis : /system device-mode print -> hotspot=yes fetch=yes scheduler=yes
 # =====================================================================
@@ -216,7 +216,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       <td>${p.active ? "" : `<span class="pill off">inactif</span>`}</td>
       <td><form method="post" action="/admin/routers/${router.id}/plans/delete" style="margin:0">
         <input type="hidden" name="code" value="${esc(p.code)}">
-        <button class="danger">retirer</button></form></td>
+        <button class="danger">Retirer</button></form></td>
     </tr>`).join("");
 
   const activePlans = plans.filter((p) => p.active);
@@ -231,30 +231,30 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
   const sessionRows = sessions.map((s) => `
     <tr>
       <td class="mono"><strong>${esc(s.username)}</strong></td>
-      <td class="mono">${esc(s.address || "—")}</td>
-      <td class="mono" style="font-size:12px">${esc(s.mac || "—")}</td>
-      <td class="mono">${esc(s.uptime || "—")}</td>
+      <td class="mono">${esc(s.address || "–")}</td>
+      <td class="mono" style="font-size:12px">${esc(s.mac || "–")}</td>
+      <td class="mono">${esc(s.uptime || "–")}</td>
       <td>${fmtBytes(s.bytes_in)} / ${fmtBytes(s.bytes_out)}</td>
       <td><form method="post" action="/admin/routers/${router.id}/kick"
                 style="margin:0" onsubmit="return confirm('Déconnecter et supprimer ${esc(s.username)} ?')">
         <input type="hidden" name="code" value="${esc(s.username)}">
-        <button class="danger">déconnecter</button></form></td>
+        <button class="danger">Déconnecter</button></form></td>
     </tr>`).join("");
 
   const info = router.info || null;
-  const mb = (b) => (b > 0 ? `${Math.round(b / 1048576)} Mo` : "—");
+  const mb = (b) => (b > 0 ? `${Math.round(b / 1048576)} Mo` : "–");
   const infoCard = info ? `
     <div class="card">
       <h2 style="margin-top:0">Informations du routeur <span class="sub" style="font-size:12px">
-        (rapportées par l'agent — ${info.reportedAt ? new Date(info.reportedAt).toLocaleString("fr-FR") : ""})</span></h2>
+        (rapportées par l'agent, ${info.reportedAt ? new Date(info.reportedAt).toLocaleString("fr-FR") : ""})</span></h2>
       <table>
         <tr><th>Identité</th><th>Modèle</th><th>RouterOS</th><th>Uptime</th>
             <th>CPU</th><th>RAM libre</th><th>Connectés</th><th>Comptes hotspot</th></tr>
         <tr>
-          <td><strong>${esc(info.identity || "—")}</strong></td>
-          <td>${esc(info.board || "—")}</td>
-          <td class="mono">${esc(info.version || "—")}</td>
-          <td class="mono">${esc(info.uptime || "—")}</td>
+          <td><strong>${esc(info.identity || "–")}</strong></td>
+          <td>${esc(info.board || "–")}</td>
+          <td class="mono">${esc(info.version || "–")}</td>
+          <td class="mono">${esc(info.uptime || "–")}</td>
           <td>${info.cpuLoad}%</td>
           <td>${mb(info.freeMem)} / ${mb(info.totalMem)}</td>
           <td><span class="pill ok">${info.activeUsers} en ligne</span></td>
@@ -263,7 +263,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       </table>
     </div>` : `
     <div class="card"><p class="sub" style="margin:0">Aucun rapport reçu du routeur pour
-    l'instant — importez le script agent ci-dessous, le premier rapport arrive en ≤ 15 s.</p></div>`;
+    l'instant. Importez le script agent ci-dessous, le premier rapport arrive en ≤ 15 s.</p></div>`;
 
   res.type("html").send(layout(router.name, `
     <h1>${esc(router.name)} ${onlinePill(router.last_seen)}</h1>
@@ -271,38 +271,13 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       &middot; Portail : <span class="mono">${esc(router.portal_url || "non défini")}</span></p>
     ${infoCard}
 
-    <div class="grid2">
-      <div class="card">
-        <h2 style="margin-top:0">Forfaits</h2>
-        <table>
-          <tr><th>Code</th><th>Nom</th><th>Prix</th><th>Durée</th><th>Appareils</th><th></th><th></th></tr>
-          ${planRows || `<tr><td colspan="7" style="color:var(--ink-soft)">Aucun forfait.</td></tr>`}
-        </table>
-        <h2>Ajouter / modifier un forfait</h2>
-        <form class="inline" method="post" action="/admin/routers/${router.id}/plans">
-          <label>Code <input name="code" placeholder="3j" size="4" required></label>
-          <label>Nom <input name="label" placeholder="3 jours" size="10" required></label>
-          <label>Prix HTG <input name="price_htg" type="number" min="20" size="6" required></label>
-          <label>Durée RouterOS <input name="uptime" placeholder="3d" size="5" required></label>
-          <label>Appareils <input name="shared_users" type="number" min="1" max="50" value="1" size="3" required></label>
-          <button type="submit">Enregistrer</button>
-        </form>
-      </div>
+    <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
+      <a class="btn" href="/admin/routers/${router.id}/vouchers">Vouchers (${voucherCount})</a>
+      <a class="btn ghost" href="/admin/routers/${router.id}/plans">Forfaits (${plans.filter((p) => p.active).length})</a>
+    </div>
 
-      <div class="card">
-        <h2 style="margin-top:0">Générer des vouchers (lot)</h2>
-        <form class="inline" method="post" action="/admin/routers/${router.id}/vouchers">
-          <label>Forfait
-            <select name="plan_code" required>
-              ${activePlans.map((p) => `<option value="${esc(p.code)}">${esc(p.label)} — ${p.price_htg} HTG</option>`).join("")}
-            </select></label>
-          <label>Quantité <input name="count" type="number" min="1" max="200" value="10" required></label>
-          <button type="submit" ${activePlans.length === 0 ? "disabled" : ""}>Générer + imprimer</button>
-        </form>
-        <p class="sub" style="margin:10px 0 0">Les codes sont créés sur le routeur par l'agent
-        (&le; 15 s s'il est en ligne), puis la page d'impression s'ouvre.</p>
-
-        <h2>Script agent (à importer une fois sur ce routeur)</h2>
+    <div class="card">
+        <h2 style="margin-top:0">Script agent (à importer une fois sur ce routeur)</h2>
         <p class="sub" style="margin:0 0 10px">Deux façons : <strong>Copier</strong> puis coller
         dans WinBox → New Terminal ; ou <strong>Télécharger</strong> le fichier
         <span class="mono">mikrovoucher-agent.rsc</span>, le glisser dans Files, puis lancer
@@ -336,16 +311,60 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       </table>
     </div>
 
-    <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
-      <div><h2 style="margin:0">Vouchers</h2>
-        <p class="sub" style="margin:2px 0 0">${voucherCount} code(s) — gestion, suppression, impression.</p></div>
-      <a class="btn" href="/admin/routers/${router.id}/vouchers">Gérer les vouchers</a>
-    </div>
+
 
     <form method="post" action="/admin/routers/${router.id}/delete"
           onsubmit="return confirm('Supprimer ce routeur et tout son historique ?')">
       <button class="danger">Supprimer ce routeur</button>
     </form>`, { active: "routers", autorefresh: true }));
+});
+
+// Page dédiée aux forfaits d'un routeur.
+adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
+  const router = await getRouter(Number(req.params.id));
+  if (!router) return res.redirect("/admin/routers");
+  const plans = await listPlans(router.id);
+  const rows = plans.map((p) => `
+    <tr>
+      <td class="mono">${esc(p.code)}</td>
+      <td>${esc(p.label)}</td>
+      <td>${p.price_htg} HTG</td>
+      <td class="mono">${esc(p.uptime)}</td>
+      <td>${p.shared_users}</td>
+      <td>${p.active ? `<span class="pill ok">actif</span>` : `<span class="pill off">inactif</span>`}</td>
+      <td><form method="post" action="/admin/routers/${router.id}/plans/delete" style="margin:0">
+        <input type="hidden" name="code" value="${esc(p.code)}">
+        <button class="danger">Retirer</button></form></td>
+    </tr>`).join("");
+
+  res.type("html").send(layout(`Forfaits : ${router.name}`, `
+    <h1>Forfaits</h1>
+    <p class="sub">${esc(router.name)}</p>
+    <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
+      <a class="btn ghost" href="/admin/routers/${router.id}">Fiche routeur</a>
+      <a class="btn ghost" href="/admin/routers/${router.id}/vouchers">Vouchers</a>
+    </div>
+
+    <div class="card">
+      <table>
+        <tr><th>Code</th><th>Nom</th><th>Prix</th><th>Durée</th><th>Appareils</th><th>État</th><th></th></tr>
+        ${rows || `<tr><td colspan="7" style="color:var(--ink-soft)">Aucun forfait.</td></tr>`}
+      </table>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Ajouter ou modifier un forfait</h2>
+      <form class="inline" method="post" action="/admin/routers/${router.id}/plans">
+        <label>Code <input name="code" placeholder="3j" size="5" required></label>
+        <label>Nom <input name="label" placeholder="3 jours" size="12" required></label>
+        <label>Prix HTG <input name="price_htg" type="number" min="20" size="6" required></label>
+        <label>Durée RouterOS <input name="uptime" placeholder="3d" size="6" required></label>
+        <label>Appareils <input name="shared_users" type="number" min="1" max="50" value="1" size="4" required></label>
+        <button type="submit">Enregistrer</button>
+      </form>
+      <p class="sub" style="margin:12px 0 0">Un code existant est mis à jour.
+      « Appareils » = nombre d'appareils pouvant utiliser le même voucher en même temps.</p>
+    </div>`, { active: "routers" }));
 });
 
 // Page dédiée aux vouchers d'un routeur (la fiche routeur reste légère).
@@ -377,23 +396,29 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
         : `<span class="pill wait">en file</span>`}</td>
       <td style="color:var(--ink-soft);font-size:12px">${new Date(v.created_at).toLocaleString("fr-FR")}</td>
       <td style="display:flex;gap:6px">
-        <a class="btn ghost" href="/admin/print?ids=${v.id}">imprimer</a>
+        <a class="btn ghost" href="/admin/print?ids=${v.id}">Imprimer</a>
         <form method="post" action="/admin/routers/${router.id}/vouchers/${v.id}/delete"
               style="margin:0" onsubmit="return confirm('Supprimer le code ${esc(v.code)} ? Le client sera déconnecté.')">
-          <button class="danger">supprimer</button></form>
+          <button class="danger">Supprimer</button></form>
       </td>
     </tr>`).join("");
 
-  res.type("html").send(layout(`Vouchers — ${router.name}`, `
-    <h1>Vouchers <span class="sub" style="font-size:14px">— ${esc(router.name)}</span></h1>
-    <p class="sub"><a href="/admin/routers/${router.id}">← Retour à la fiche routeur</a></p>
+  res.type("html").send(layout(`Vouchers : ${router.name}`, `
+    <h1>Vouchers</h1>
+    <p class="sub">${esc(router.name)}</p>
+    
+
+    <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
+      <a class="btn ghost" href="/admin/routers/${router.id}">Fiche routeur</a>
+      <a class="btn ghost" href="/admin/routers/${router.id}/plans">Forfaits</a>
+    </div>
 
     <div class="card">
       <h2 style="margin-top:0">Générer un lot</h2>
       <form class="inline" method="post" action="/admin/routers/${router.id}/vouchers">
         <label>Forfait
           <select name="plan_code" required>
-            ${activePlans.map((p) => `<option value="${esc(p.code)}">${esc(p.label)} — ${p.price_htg} HTG (${p.shared_users} app.)</option>`).join("")}
+            ${activePlans.map((p) => `<option value="${esc(p.code)}">${esc(p.label)} · ${p.price_htg} HTG · ${p.shared_users} app.</option>`).join("")}
           </select></label>
         <label>Quantité <input name="count" type="number" min="1" max="200" value="10" required></label>
         <button type="submit" ${activePlans.length === 0 ? "disabled" : ""}>Générer + imprimer</button>
@@ -516,7 +541,7 @@ adminRouter.get("/admin/print", requireAdmin, async (req, res) => {
     <div class="tk">
       <div class="tk-brand">Code WiFi</div>
       <div class="tk-code">${esc(v.code)}</div>
-      <div class="tk-plan">${esc(v.plan_label || "")} — ${v.price_htg ?? ""} HTG</div>
+      <div class="tk-plan">${esc(v.plan_label || "")} · ${v.price_htg ?? ""} HTG</div>
     </div>`).join("");
 
   res.type("html").send(`<!doctype html>
@@ -554,7 +579,7 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
           : o.status === "PAID" ? `<span class="pill wait">payé</span>`
           : o.status === "EXPIRED" ? `<span class="pill off">expiré</span>`
           : `<span class="pill wait">en attente</span>`}</td>
-      <td class="mono">${esc(o.voucher_code || "—")}</td>
+      <td class="mono">${esc(o.voucher_code || "–")}</td>
       <td style="color:var(--ink-soft);font-size:12px">${new Date(o.created_at).toLocaleString("fr-FR")}</td>
     </tr>`).join("");
 

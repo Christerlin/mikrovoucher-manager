@@ -1,0 +1,20 @@
+{
+  "name": "mikrovoucher-manager",
+  "version": "0.1.0",
+  "description": "Gestionnaire de hotspots MikroTik auto-hébergé : multi-routeurs, vouchers, paiement mobile (Pay'm : Moncash/Natcash/Kashpaw). Compatible CGNAT (Starlink) — les routeurs se connectent en sortant, aucun port à ouvrir.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
+  },
+  "license": "MIT"
+}

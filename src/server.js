@@ -1,0 +1,46 @@
+import express from "express";
+import cors from "cors";
+import { config } from "./config.js";
+import { initDb } from "./db.js";
+import { portalRouter, reconcile } from "./portal.js";
+import { agentRouter } from "./agent.js";
+import { adminRouter } from "./admin/pages.js";
+
+const app = express();
+app.set("trust proxy", config.trustProxy);
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
+
+// CORS uniquement pour l'API du portail (le dashboard est same-origin).
+// Sans CORS_ORIGINS on autorise tout (démarrage facile) avec un avertissement ;
+// en production, listez vos portails : http://lambda.connect,http://tm.connect
+if (config.corsOrigins.length === 0) {
+  console.warn("[cors] CORS_ORIGINS non défini : /api/* accepte toutes les origines. " +
+    "Restreignez-le en production.");
+}
+const corsMw = cors({
+  origin: config.corsOrigins.length > 0 ? config.corsOrigins : true,
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type", "x-claim-token"],
+});
+app.use("/api", corsMw);
+
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
+app.use(portalRouter);
+app.use(agentRouter);
+app.use(adminRouter);
+
+app.get("/", (_req, res) => res.redirect("/admin"));
+
+async function main() {
+  await initDb();
+  setInterval(reconcile, config.reconcileIntervalMs);
+  app.listen(config.port, () =>
+    console.log(`Mikrovoucher Manager sur le port ${config.port}`));
+}
+
+main().catch((err) => {
+  console.error("Échec du démarrage :", err);
+  process.exit(1);
+});

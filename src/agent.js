@@ -111,7 +111,9 @@ agentRouter.post("/agent/sessions", async (req, res) => {
     const rows = rawBody(req).split("\n")
       .map((l) => l.trim()).filter(Boolean)
       .map((line) => {
-        const [username, address, mac, uptime, bIn, bOut] = line.split(",");
+        // timeLeft est ajouté en fin de ligne : les agents plus anciens
+        // (6 champs) restent compatibles.
+        const [username, address, mac, uptime, bIn, bOut, timeLeft] = line.split(",");
         return {
           username: username || "?",
           address: address || null,
@@ -119,6 +121,7 @@ agentRouter.post("/agent/sessions", async (req, res) => {
           uptime: uptime || null,
           bytesIn: Number(bIn) || 0,
           bytesOut: Number(bOut) || 0,
+          timeLeft: timeLeft || null,
         };
       });
     await replaceSessions(router.id, rows);

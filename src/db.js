@@ -57,8 +57,10 @@ export async function initDb() {
       uptime      TEXT,
       bytes_in    BIGINT DEFAULT 0,
       bytes_out   BIGINT DEFAULT 0,
+      time_left   TEXT,
       seen_at     TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS time_left TEXT;
     CREATE INDEX IF NOT EXISTS sessions_router_idx ON sessions (router_id);
 
     CREATE TABLE IF NOT EXISTS plans (
@@ -165,9 +167,9 @@ export async function replaceSessions(routerId, rows) {
     await client.query(`DELETE FROM sessions WHERE router_id = $1`, [routerId]);
     for (const s of rows) {
       await client.query(
-        `INSERT INTO sessions (router_id, username, address, mac, uptime, bytes_in, bytes_out)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [routerId, s.username, s.address, s.mac, s.uptime, s.bytesIn, s.bytesOut]);
+        `INSERT INTO sessions (router_id, username, address, mac, uptime, bytes_in, bytes_out, time_left)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [routerId, s.username, s.address, s.mac, s.uptime, s.bytesIn, s.bytesOut, s.timeLeft]);
     }
     await client.query("COMMIT");
   } catch (err) {
@@ -179,8 +181,16 @@ export async function replaceSessions(routerId, rows) {
 }
 
 export async function listSessions(routerId) {
+  // Le nom d'utilisateur d'une session EST le code du voucher : on remonte
+  // ainsi au forfait acheté (durée, nombre d'appareils, prix).
   const { rows } = await pool.query(
-    `SELECT * FROM sessions WHERE router_id = $1 ORDER BY username`, [routerId]);
+    `SELECT s.*, p.label AS plan_label, p.uptime AS plan_uptime,
+            p.shared_users, v.source AS voucher_source
+       FROM sessions s
+       LEFT JOIN vouchers v ON v.router_id = s.router_id AND v.code = s.username
+       LEFT JOIN plans p ON p.id = v.plan_id
+      WHERE s.router_id = $1
+      ORDER BY s.username`, [routerId]);
   return rows;
 }
 

@@ -82,7 +82,7 @@ a{color:var(--accent)}
 </header>
 <main>${body}</main>
 <script>
-// Rafraichissement auto (5 s) des pages de suivi. Suspendu pendant une saisie
+// Rafraichissement auto (30 s) des pages de suivi. Suspendu pendant une saisie
 // ou quand un menu est ouvert, pour ne jamais interrompre l'utilisateur.
 (function () {
   if (!document.body.dataset.autorefresh) return;
@@ -91,7 +91,7 @@ a{color:var(--accent)}
     if (el && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(el.tagName)) return;
     if (window.getSelection && String(window.getSelection())) return;
     location.reload();
-  }, 5000);
+  }, 30000);
 })();
 </script>
 </body>

@@ -184,7 +184,9 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
       :local t [/ip hotspot active get $s uptime];
       :local bi [/ip hotspot active get $s bytes-in];
       :local bo [/ip hotspot active get $s bytes-out];
-      :set lines ("$lines$u,$a,$m,$t,$bi,$bo\\n");
+      :local tl "";
+      :do { :set tl [/ip hotspot active get $s session-time-left]; } on-error={ :set tl ""; }
+      :set lines ("$lines$u,$a,$m,$t,$bi,$bo,$tl\\n");
     }
     /tool fetch url=("$backend/agent/sessions") http-method=post \\
       http-header-field=("x-router-token: $token") \\
@@ -231,6 +233,12 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
   const sessionRows = sessions.map((s) => `
     <tr>
       <td class="mono"><strong>${esc(s.username)}</strong></td>
+      <td>${s.plan_label
+        ? `${esc(s.plan_label)}${s.shared_users > 1 ? ` <span class="pill wait">${s.shared_users} app.</span>` : ""}`
+        : `<span style="color:var(--ink-soft)">hors manager</span>`}</td>
+      <td class="mono">${s.time_left
+        ? `<strong>${esc(s.time_left)}</strong>`
+        : `<span style="color:var(--ink-soft)">illimité</span>`}</td>
       <td class="mono">${esc(s.address || "–")}</td>
       <td class="mono" style="font-size:12px">${esc(s.mac || "–")}</td>
       <td class="mono">${esc(s.uptime || "–")}</td>
@@ -306,8 +314,9 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       <h2 style="margin-top:0">Clients connectés
         <span class="pill ok">${sessions.length}</span></h2>
       <table>
-        <tr><th>Code</th><th>IP</th><th>MAC</th><th>Durée</th><th>Données ↓ / ↑</th><th></th></tr>
-        ${sessionRows || `<tr><td colspan="6" style="color:var(--ink-soft)">Personne connecté pour l'instant.</td></tr>`}
+        <tr><th>Code</th><th>Forfait</th><th>Temps restant</th><th>IP</th><th>MAC</th>
+            <th>Connecté depuis</th><th>Données ↓ / ↑</th><th></th></tr>
+        ${sessionRows || `<tr><td colspan="8" style="color:var(--ink-soft)">Personne connecté pour l'instant.</td></tr>`}
       </table>
     </div>
 

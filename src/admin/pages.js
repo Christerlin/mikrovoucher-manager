@@ -4,7 +4,7 @@ import { Router } from "express";
 import { config } from "../config.js";
 import {
   listRouters, getRouter, createRouter, deleteRouter,
-  listPlans, upsertPlan, deactivatePlan, getPlan,
+  listPlans, upsertPlan, removePlan, activatePlan, getPlan,
   createVoucher, listVouchers, getVouchersByIds, deleteVoucher, setVoucherPlan,
   listSessions, queueCommand,
   listOrders, salesSummary,
@@ -324,18 +324,41 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
   const plans = await listPlans(router.id);
-  const rows = plans.map((p) => `
+  const active = plans.filter((p) => p.active);
+  const retired = plans.filter((p) => !p.active);
+  const rows = active.map((p) => `
     <tr>
       <td class="mono">${esc(p.code)}</td>
       <td>${esc(p.label)}</td>
       <td>${p.price_htg} HTG</td>
       <td class="mono">${esc(p.uptime)}</td>
       <td>${p.shared_users}</td>
-      <td>${p.active ? `<span class="pill ok">actif</span>` : `<span class="pill off">inactif</span>`}</td>
-      <td><form method="post" action="/admin/routers/${router.id}/plans/delete" style="margin:0">
+      <td><form method="post" action="/admin/routers/${router.id}/plans/delete" style="margin:0"
+                onsubmit="return confirm('Retirer le forfait ${esc(p.label)} ?')">
         <input type="hidden" name="code" value="${esc(p.code)}">
         <button class="danger">Retirer</button></form></td>
     </tr>`).join("");
+  const retiredRows = retired.map((p) => `
+    <tr>
+      <td class="mono">${esc(p.code)}</td>
+      <td>${esc(p.label)}</td>
+      <td>${p.price_htg} HTG</td>
+      <td class="mono">${esc(p.uptime)}</td>
+      <td>${p.shared_users}</td>
+      <td><form method="post" action="/admin/routers/${router.id}/plans/restore" style="margin:0">
+        <input type="hidden" name="code" value="${esc(p.code)}">
+        <button class="ghost">Réactiver</button></form></td>
+    </tr>`).join("");
+  const retiredCard = retired.length === 0 ? "" : `
+    <div class="card">
+      <h2 style="margin-top:0">Forfaits retirés</h2>
+      <p class="sub" style="margin:0 0 10px">Conservés car des vouchers ou des ventes les
+      utilisent. Ils n'apparaissent plus sur le portail.</p>
+      <table>
+        <tr><th>Code</th><th>Nom</th><th>Prix</th><th>Durée</th><th>Appareils</th><th></th></tr>
+        ${retiredRows}
+      </table>
+    </div>`;
 
   res.type("html").send(layout(`Forfaits : ${router.name}`, `
     <h1>Forfaits</h1>
@@ -347,10 +370,11 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
 
     <div class="card">
       <table>
-        <tr><th>Code</th><th>Nom</th><th>Prix</th><th>Durée</th><th>Appareils</th><th>État</th><th></th></tr>
-        ${rows || `<tr><td colspan="7" style="color:var(--ink-soft)">Aucun forfait.</td></tr>`}
+        <tr><th>Code</th><th>Nom</th><th>Prix</th><th>Durée</th><th>Appareils</th><th></th></tr>
+        ${rows || `<tr><td colspan="6" style="color:var(--ink-soft)">Aucun forfait actif.</td></tr>`}
       </table>
     </div>
+    ${retiredCard}
 
     <div class="card">
       <h2 style="margin-top:0">Ajouter ou modifier un forfait</h2>
@@ -496,12 +520,17 @@ adminRouter.post("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
       sharedUsers: Number((req.body || {}).shared_users) || 1,
     });
   }
-  res.redirect(`/admin/routers/${id}`);
+  res.redirect(`/admin/routers/${id}/plans`);
 });
 
 adminRouter.post("/admin/routers/:id/plans/delete", requireAdmin, async (req, res) => {
-  await deactivatePlan(Number(req.params.id), String((req.body || {}).code || ""));
-  res.redirect(`/admin/routers/${req.params.id}`);
+  await removePlan(Number(req.params.id), String((req.body || {}).code || ""));
+  res.redirect(`/admin/routers/${req.params.id}/plans`);
+});
+
+adminRouter.post("/admin/routers/:id/plans/restore", requireAdmin, async (req, res) => {
+  await activatePlan(Number(req.params.id), String((req.body || {}).code || ""));
+  res.redirect(`/admin/routers/${req.params.id}/plans`);
 });
 
 adminRouter.post("/admin/routers/:id/vouchers", requireAdmin, async (req, res) => {

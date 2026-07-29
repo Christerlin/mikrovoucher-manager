@@ -237,6 +237,28 @@ export async function deactivatePlan(routerId, code) {
     `UPDATE plans SET active=false WHERE router_id=$1 AND code=$2`, [routerId, code]);
 }
 
+export async function activatePlan(routerId, code) {
+  await pool.query(
+    `UPDATE plans SET active=true WHERE router_id=$1 AND code=$2`, [routerId, code]);
+}
+
+// Retire un forfait : suppression réelle s'il n'a jamais servi, sinon simple
+// désactivation (des vouchers/ventes le référencent, on ne casse pas l'historique).
+// Renvoie 'deleted' ou 'deactivated'.
+export async function removePlan(routerId, code) {
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM plans WHERE router_id=$1 AND code=$2`, [routerId, code]);
+    return rowCount === 1 ? "deleted" : "absent";
+  } catch (err) {
+    if (String(err.code) === "23503") { // foreign_key_violation
+      await deactivatePlan(routerId, code);
+      return "deactivated";
+    }
+    throw err;
+  }
+}
+
 // --------------------------------------------------- vouchers + commandes --
 // Crée un voucher et sa commande de création routeur, atomiquement.
 export async function createVoucher({ routerId, code, planId, uptime, source, comment, profile, sharedUsers }) {

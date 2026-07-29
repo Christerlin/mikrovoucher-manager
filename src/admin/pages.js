@@ -5,7 +5,8 @@ import { config } from "../config.js";
 import {
   listRouters, getRouter, createRouter, deleteRouter,
   listPlans, upsertPlan, deactivatePlan, getPlan,
-  createVoucher, listVouchers, getVouchersByIds,
+  createVoucher, listVouchers, getVouchersByIds, deleteVoucher,
+  listSessions, queueCommand,
   listOrders, salesSummary,
 } from "../db.js";
 import { generateRouterToken, generateVoucherCode } from "../codes.js";
@@ -153,6 +154,21 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
       http-data=("$rid|$rver|$rbrd|$rupt|$rcpu|$rfm|$rtm|$ract|$rusr") \\
       keep-result=no;
   } on-error={}
+  :do {
+    :local lines "";
+    :foreach s in=[/ip hotspot active find] do={
+      :local u [/ip hotspot active get $s user];
+      :local a [/ip hotspot active get $s address];
+      :local m [/ip hotspot active get $s mac-address];
+      :local t [/ip hotspot active get $s uptime];
+      :local bi [/ip hotspot active get $s bytes-in];
+      :local bo [/ip hotspot active get $s bytes-out];
+      :set lines ("$lines$u,$a,$m,$t,$bi,$bo\\n");
+    }
+    /tool fetch url=("$backend/agent/sessions") http-method=post \\
+      http-header-field=("x-router-token: $token") \\
+      http-data=$lines keep-result=no;
+  } on-error={}
 }
 /system scheduler
 add name=mikrovoucher-sched interval=15s on-event="/system script run mikrovoucher-agent" \\
@@ -166,8 +182,8 @@ add dst-host=${host} comment="mikrovoucher manager"
 adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
-  const [plans, vouchers] = await Promise.all([
-    listPlans(router.id), listVouchers(router.id, 40),
+  const [plans, vouchers, sessions] = await Promise.all([
+    listPlans(router.id), listVouchers(router.id, 40), listSessions(router.id),
   ]);
   const base = publicBase(req);
 
@@ -182,15 +198,39 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
     </tr>`).join("");
 
   const activePlans = plans.filter((p) => p.active);
+  const online = new Set(sessions.map((s) => s.username));
   const voucherRows = vouchers.map((v) => `
     <tr>
       <td class="mono"><strong>${esc(v.code)}</strong></td>
       <td>${esc(v.plan_label || "—")}</td>
       <td>${v.source === "order" ? "vente en ligne" : "lot"}</td>
-      <td>${v.status === "ON_ROUTER"
-        ? `<span class="pill ok">sur le routeur</span>`
+      <td>${online.has(v.code) ? `<span class="pill ok">connecté</span>`
+        : v.status === "ON_ROUTER" ? `<span class="pill ok">sur le routeur</span>`
         : `<span class="pill wait">en file</span>`}</td>
       <td style="color:var(--ink-soft)">${new Date(v.created_at).toLocaleString("fr-FR")}</td>
+      <td><form method="post" action="/admin/routers/${router.id}/vouchers/${v.id}/delete"
+                style="margin:0" onsubmit="return confirm('Supprimer le code ${esc(v.code)} ?')">
+        <button class="danger">supprimer</button></form></td>
+    </tr>`).join("");
+
+  const fmtBytes = (n) => {
+    n = Number(n) || 0;
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " Go";
+    if (n >= 1048576) return Math.round(n / 1048576) + " Mo";
+    if (n >= 1024) return Math.round(n / 1024) + " Ko";
+    return n + " o";
+  };
+  const sessionRows = sessions.map((s) => `
+    <tr>
+      <td class="mono"><strong>${esc(s.username)}</strong></td>
+      <td class="mono">${esc(s.address || "—")}</td>
+      <td class="mono" style="font-size:12px">${esc(s.mac || "—")}</td>
+      <td class="mono">${esc(s.uptime || "—")}</td>
+      <td>${fmtBytes(s.bytes_in)} / ${fmtBytes(s.bytes_out)}</td>
+      <td><form method="post" action="/admin/routers/${router.id}/kick"
+                style="margin:0" onsubmit="return confirm('Déconnecter et supprimer ${esc(s.username)} ?')">
+        <input type="hidden" name="code" value="${esc(s.username)}">
+        <button class="danger">déconnecter</button></form></td>
     </tr>`).join("");
 
   const info = router.info || null;
@@ -254,15 +294,44 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
         (&le; 15 s s'il est en ligne), puis la page d'impression s'ouvre.</p>
 
         <h2>Script agent (à importer une fois sur ce routeur)</h2>
-        <textarea readonly onclick="this.select()">${esc(agentRsc(router, base))}</textarea>
+        <p class="sub" style="margin:0 0 10px">Deux façons : <strong>Copier</strong> puis coller
+        dans WinBox → New Terminal ; ou <strong>Télécharger</strong> le fichier
+        <span class="mono">mikrovoucher-agent.rsc</span>, le glisser dans Files, puis lancer
+        <span class="mono">/import mikrovoucher-agent.rsc</span>.</p>
+        <div style="display:flex;gap:10px;margin-bottom:10px">
+          <button type="button" id="copyBtn" onclick="copyAgent()">Copier le script</button>
+          <a class="btn ghost" href="/admin/routers/${router.id}/agent.rsc">Télécharger .rsc</a>
+        </div>
+        <textarea id="agentScript" readonly onclick="this.select()">${esc(agentRsc(router, base))}</textarea>
+        <script>
+          function copyAgent() {
+            var ta = document.getElementById('agentScript');
+            var btn = document.getElementById('copyBtn');
+            ta.select();
+            var done = function () { btn.textContent = 'Copié !';
+              setTimeout(function () { btn.textContent = 'Copier le script'; }, 2000); };
+            if (navigator.clipboard) {
+              navigator.clipboard.writeText(ta.value).then(done, function () { document.execCommand('copy'); done(); });
+            } else { document.execCommand('copy'); done(); }
+          }
+        </script>
       </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Clients connectés
+        <span class="pill ok">${sessions.length}</span></h2>
+      <table>
+        <tr><th>Code</th><th>IP</th><th>MAC</th><th>Durée</th><th>Données ↓ / ↑</th><th></th></tr>
+        ${sessionRows || `<tr><td colspan="6" style="color:var(--ink-soft)">Personne connecté pour l'instant.</td></tr>`}
+      </table>
     </div>
 
     <div class="card">
       <h2 style="margin-top:0">Derniers vouchers</h2>
       <table>
-        <tr><th>Code</th><th>Forfait</th><th>Origine</th><th>État</th><th>Créé</th></tr>
-        ${voucherRows || `<tr><td colspan="5" style="color:var(--ink-soft)">Aucun voucher.</td></tr>`}
+        <tr><th>Code</th><th>Forfait</th><th>Origine</th><th>État</th><th>Créé</th><th></th></tr>
+        ${voucherRows || `<tr><td colspan="6" style="color:var(--ink-soft)">Aucun voucher.</td></tr>`}
       </table>
     </div>
 
@@ -270,6 +339,33 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
           onsubmit="return confirm('Supprimer ce routeur et tout son historique ?')">
       <button class="danger">Supprimer ce routeur</button>
     </form>`, { active: "routers" }));
+});
+
+// Supprime un voucher : retiré de la liste ici, et une commande 'remove' est
+// mise en file pour que le routeur supprime le compte hotspot (donc déconnecte
+// le client s'il est en ligne).
+adminRouter.post("/admin/routers/:id/vouchers/:vid/delete", requireAdmin, async (req, res) => {
+  const routerId = Number(req.params.id);
+  const removed = await deleteVoucher(routerId, Number(req.params.vid));
+  if (removed) await queueCommand(routerId, "remove", { code: removed.code });
+  res.redirect(`/admin/routers/${routerId}`);
+});
+
+// Déconnecte un client : on supprime son compte hotspot sur le routeur.
+adminRouter.post("/admin/routers/:id/kick", requireAdmin, async (req, res) => {
+  const routerId = Number(req.params.id);
+  const code = String((req.body || {}).code || "");
+  if (code) await queueCommand(routerId, "remove", { code });
+  res.redirect(`/admin/routers/${routerId}`);
+});
+
+// Téléchargement du script agent, prêt à glisser dans Files puis /import.
+adminRouter.get("/admin/routers/:id/agent.rsc", requireAdmin, async (req, res) => {
+  const router = await getRouter(Number(req.params.id));
+  if (!router) return res.redirect("/admin/routers");
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="mikrovoucher-agent.rsc"');
+  res.send(agentRsc(router, publicBase(req)));
 });
 
 adminRouter.post("/admin/routers/:id/plans", requireAdmin, async (req, res) => {

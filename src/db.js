@@ -47,6 +47,20 @@ export async function initDb() {
     -- Dernier rapport d'état envoyé par l'agent (identité, version, CPU...).
     ALTER TABLE routers ADD COLUMN IF NOT EXISTS info JSONB;
 
+    -- Sessions hotspot actives, remplacées à chaque rapport de l'agent.
+    CREATE TABLE IF NOT EXISTS sessions (
+      id          SERIAL PRIMARY KEY,
+      router_id   INT NOT NULL REFERENCES routers(id) ON DELETE CASCADE,
+      username    TEXT NOT NULL,
+      address     TEXT,
+      mac         TEXT,
+      uptime      TEXT,
+      bytes_in    BIGINT DEFAULT 0,
+      bytes_out   BIGINT DEFAULT 0,
+      seen_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS sessions_router_idx ON sessions (router_id);
+
     CREATE TABLE IF NOT EXISTS plans (
       id          SERIAL PRIMARY KEY,
       router_id   INT NOT NULL REFERENCES routers(id) ON DELETE CASCADE,
@@ -138,6 +152,49 @@ export async function touchRouter(id) {
 export async function updateRouterInfo(id, info) {
   await pool.query(`UPDATE routers SET info = $2, last_seen = now() WHERE id = $1`,
     [id, info]);
+}
+
+// Remplace l'instantané des sessions actives d'un routeur (vue "qui est en
+// ligne maintenant" — c'est un instantané, pas un historique).
+export async function replaceSessions(routerId, rows) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`DELETE FROM sessions WHERE router_id = $1`, [routerId]);
+    for (const s of rows) {
+      await client.query(
+        `INSERT INTO sessions (router_id, username, address, mac, uptime, bytes_in, bytes_out)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [routerId, s.username, s.address, s.mac, s.uptime, s.bytesIn, s.bytesOut]);
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listSessions(routerId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM sessions WHERE router_id = $1 ORDER BY username`, [routerId]);
+  return rows;
+}
+
+// Met en file une commande brute pour un routeur (ex : suppression d'un code).
+export async function queueCommand(routerId, action, payload) {
+  const { rows } = await pool.query(
+    `INSERT INTO commands (router_id, action, payload) VALUES ($1,$2,$3) RETURNING *`,
+    [routerId, action, payload]);
+  return rows[0];
+}
+
+export async function deleteVoucher(routerId, voucherId) {
+  const { rows } = await pool.query(
+    `DELETE FROM vouchers WHERE id = $1 AND router_id = $2 RETURNING code`,
+    [voucherId, routerId]);
+  return rows[0] || null;
 }
 export async function deleteRouter(id) {
   await pool.query(`DELETE FROM routers WHERE id = $1`, [id]);

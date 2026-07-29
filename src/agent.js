@@ -7,10 +7,25 @@
 //   GET /agent/ack?id=N -> "ok"
 // Chaque appel met à jour last_seen (état "en ligne" du dashboard).
 
-import express, { Router } from "express";
-import { getRouterByToken, touchRouter, nextCommand, ackCommand, updateRouterInfo } from "./db.js";
+import { Router } from "express";
+import {
+  getRouterByToken, touchRouter, nextCommand, ackCommand,
+  updateRouterInfo, replaceSessions,
+} from "./db.js";
 
 export const agentRouter = Router();
+
+// Corps de requête en texte. Si un parseur amont l'a transformé en objet
+// (Content-Type inattendu de /tool fetch), on retombe sur sa seule clé.
+function rawBody(req) {
+  const b = req.body;
+  if (typeof b === "string") return b;
+  if (b && typeof b === "object") {
+    const keys = Object.keys(b);
+    if (keys.length === 1 && b[keys[0]] === "") return keys[0];
+  }
+  return "";
+}
 
 async function authRouterDevice(req, res) {
   const token = String(req.headers["x-router-token"] || "");
@@ -58,12 +73,11 @@ agentRouter.get("/agent/ack", async (req, res) => {
 // Rapport d'état du routeur, envoyé à chaque cycle de l'agent.
 // Corps texte : identite|version|board|uptime|cpu|freeMem|totalMem|actifs|users
 agentRouter.post("/agent/report",
-  express.text({ type: "*/*", limit: "4kb" }),
   async (req, res) => {
     try {
       const router = await authRouterDevice(req, res);
       if (!router) return;
-      const parts = String(req.body || "").split("|");
+      const parts = rawBody(req).split("|");
       const [identity, version, board, uptime, cpuLoad, freeMem, totalMem, activeUsers, totalUsers] = parts;
       await updateRouterInfo(router.id, {
         identity: identity || null,
@@ -83,3 +97,30 @@ agentRouter.post("/agent/report",
       res.status(502).type("text/plain").send("");
     }
   });
+
+// Instantané des sessions hotspot actives.
+// Corps texte, une session par ligne : user,ip,mac,uptime,bytesIn,bytesOut
+agentRouter.post("/agent/sessions", async (req, res) => {
+  try {
+    const router = await authRouterDevice(req, res);
+    if (!router) return;
+    const rows = rawBody(req).split("\n")
+      .map((l) => l.trim()).filter(Boolean)
+      .map((line) => {
+        const [username, address, mac, uptime, bIn, bOut] = line.split(",");
+        return {
+          username: username || "?",
+          address: address || null,
+          mac: mac || null,
+          uptime: uptime || null,
+          bytesIn: Number(bIn) || 0,
+          bytesOut: Number(bOut) || 0,
+        };
+      });
+    await replaceSessions(router.id, rows);
+    res.type("text/plain").send("ok");
+  } catch (err) {
+    console.error("[agent/sessions]", err.message);
+    res.status(502).type("text/plain").send("");
+  }
+});

@@ -49,7 +49,11 @@ agentRouter.get("/agent/next", async (req, res) => {
     if (!cmd) return res.send("");
     const p = cmd.payload || {};
     // Le séparateur | n'apparaît jamais dans nos codes (alphabet contrôlé).
-    res.send([cmd.id, cmd.action, p.code || "", p.uptime || "", p.comment || ""].join("|"));
+    // Format : id|action|code|uptime|profil|sharedUsers|commentaire
+    res.send([
+      cmd.id, cmd.action, p.code || "", p.uptime || "",
+      p.profile || "", p.shared || 1, p.comment || "",
+    ].join("|"));
   } catch (err) {
     console.error("[agent/next]", err.message);
     res.status(502).type("text/plain").send("");

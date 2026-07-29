@@ -68,9 +68,11 @@ export async function initDb() {
       label       TEXT NOT NULL,
       price_htg   INT NOT NULL,
       uptime      TEXT NOT NULL,
+      shared_users INT NOT NULL DEFAULT 1,
       active      BOOLEAN NOT NULL DEFAULT true,
       UNIQUE (router_id, code)
     );
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS shared_users INT NOT NULL DEFAULT 1;
 
     -- File de commandes que chaque routeur vient tirer (modèle pull/CGNAT).
     CREATE TABLE IF NOT EXISTS commands (
@@ -190,6 +192,13 @@ export async function queueCommand(routerId, action, payload) {
   return rows[0];
 }
 
+export async function setVoucherPlan(routerId, voucherId, planId) {
+  const { rows } = await pool.query(
+    `UPDATE vouchers SET plan_id = $3 WHERE id = $1 AND router_id = $2 RETURNING code`,
+    [voucherId, routerId, planId]);
+  return rows[0] || null;
+}
+
 export async function deleteVoucher(routerId, voucherId) {
   const { rows } = await pool.query(
     `DELETE FROM vouchers WHERE id = $1 AND router_id = $2 RETURNING code`,
@@ -215,13 +224,13 @@ export async function getPlanById(id) {
   const { rows } = await pool.query(`SELECT * FROM plans WHERE id = $1`, [id]);
   return rows[0] || null;
 }
-export async function upsertPlan({ routerId, code, label, priceHtg, uptime }) {
+export async function upsertPlan({ routerId, code, label, priceHtg, uptime, sharedUsers }) {
   await pool.query(
-    `INSERT INTO plans (router_id, code, label, price_htg, uptime)
-     VALUES ($1,$2,$3,$4,$5)
+    `INSERT INTO plans (router_id, code, label, price_htg, uptime, shared_users)
+     VALUES ($1,$2,$3,$4,$5,$6)
      ON CONFLICT (router_id, code)
-     DO UPDATE SET label=$3, price_htg=$4, uptime=$5, active=true`,
-    [routerId, code, label, priceHtg, uptime]);
+     DO UPDATE SET label=$3, price_htg=$4, uptime=$5, shared_users=$6, active=true`,
+    [routerId, code, label, priceHtg, uptime, sharedUsers || 1]);
 }
 export async function deactivatePlan(routerId, code) {
   await pool.query(
@@ -230,14 +239,17 @@ export async function deactivatePlan(routerId, code) {
 
 // --------------------------------------------------- vouchers + commandes --
 // Crée un voucher et sa commande de création routeur, atomiquement.
-export async function createVoucher({ routerId, code, planId, uptime, source, comment }) {
+export async function createVoucher({ routerId, code, planId, uptime, source, comment, profile, sharedUsers }) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const cmd = await client.query(
       `INSERT INTO commands (router_id, action, payload)
        VALUES ($1,'add',$2) RETURNING id`,
-      [routerId, { code, uptime, comment: comment || "" }]);
+      [routerId, {
+        code, uptime, comment: comment || "",
+        profile: profile || "", shared: sharedUsers || 1,
+      }]);
     const v = await client.query(
       `INSERT INTO vouchers (router_id, code, plan_id, source, command_id)
        VALUES ($1,$2,$3,$4,$5) RETURNING *`,

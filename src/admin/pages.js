@@ -5,7 +5,7 @@ import { config } from "../config.js";
 import {
   listRouters, getRouter, createRouter, deleteRouter,
   listPlans, upsertPlan, deactivatePlan, getPlan,
-  createVoucher, listVouchers, getVouchersByIds, deleteVoucher,
+  createVoucher, listVouchers, getVouchersByIds, deleteVoucher, setVoucherPlan,
   listSessions, queueCommand,
   listOrders, salesSummary,
 } from "../db.js";
@@ -121,11 +121,32 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
         :set rest [:pick $rest ($p3 + 1) [:len $rest]];
         :local p4 [:find $rest "|"];
         :local up [:pick $rest 0 $p4];
-        :local cmt [:pick $rest ($p4 + 1) [:len $rest]];
+        :set rest [:pick $rest ($p4 + 1) [:len $rest]];
+        :local p5 [:find $rest "|"];
+        :local prof [:pick $rest 0 $p5];
+        :set rest [:pick $rest ($p5 + 1) [:len $rest]];
+        :local p6 [:find $rest "|"];
+        :local shr [:pick $rest 0 $p6];
+        :local cmt [:pick $rest ($p6 + 1) [:len $rest]];
         :if ($action = "add") do={
+          # Profil par forfait : porte le nombre d'appareils simultanes.
+          :if ([:len $prof] > 0) do={
+            :if ([:len [/ip hotspot user profile find name=$prof]] = 0) do={
+              :do { /ip hotspot user profile add name=$prof shared-users=$shr; } on-error={}
+            } else={
+              :do { /ip hotspot user profile set [find name=$prof] shared-users=$shr; } on-error={}
+            }
+          }
           :if ([:len [/ip hotspot user find name=$code]] = 0) do={
-            :do { /ip hotspot user add name=$code password=$code \\
-              limit-uptime=$up comment=$cmt; } on-error={}
+            :do {
+              :if ([:len $prof] > 0) do={
+                /ip hotspot user add name=$code password=$code \\
+                  limit-uptime=$up profile=$prof comment=$cmt;
+              } else={
+                /ip hotspot user add name=$code password=$code \\
+                  limit-uptime=$up comment=$cmt;
+              }
+            } on-error={}
           }
         }
         :if ($action = "remove") do={
@@ -183,7 +204,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
   const [plans, vouchers, sessions] = await Promise.all([
-    listPlans(router.id), listVouchers(router.id, 40), listSessions(router.id),
+    listPlans(router.id), listVouchers(router.id, 500), listSessions(router.id),
   ]);
   const base = publicBase(req);
 
@@ -191,6 +212,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
     <tr>
       <td class="mono">${esc(p.code)}</td><td>${esc(p.label)}</td>
       <td>${p.price_htg} HTG</td><td class="mono">${esc(p.uptime)}</td>
+      <td>${p.shared_users}</td>
       <td>${p.active ? "" : `<span class="pill off">inactif</span>`}</td>
       <td><form method="post" action="/admin/routers/${router.id}/plans/delete" style="margin:0">
         <input type="hidden" name="code" value="${esc(p.code)}">
@@ -198,21 +220,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
     </tr>`).join("");
 
   const activePlans = plans.filter((p) => p.active);
-  const online = new Set(sessions.map((s) => s.username));
-  const voucherRows = vouchers.map((v) => `
-    <tr>
-      <td class="mono"><strong>${esc(v.code)}</strong></td>
-      <td>${esc(v.plan_label || "—")}</td>
-      <td>${v.source === "order" ? "vente en ligne" : "lot"}</td>
-      <td>${online.has(v.code) ? `<span class="pill ok">connecté</span>`
-        : v.status === "ON_ROUTER" ? `<span class="pill ok">sur le routeur</span>`
-        : `<span class="pill wait">en file</span>`}</td>
-      <td style="color:var(--ink-soft)">${new Date(v.created_at).toLocaleString("fr-FR")}</td>
-      <td><form method="post" action="/admin/routers/${router.id}/vouchers/${v.id}/delete"
-                style="margin:0" onsubmit="return confirm('Supprimer le code ${esc(v.code)} ?')">
-        <button class="danger">supprimer</button></form></td>
-    </tr>`).join("");
-
+  const voucherCount = vouchers.length;
   const fmtBytes = (n) => {
     n = Number(n) || 0;
     if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " Go";
@@ -267,8 +275,8 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       <div class="card">
         <h2 style="margin-top:0">Forfaits</h2>
         <table>
-          <tr><th>Code</th><th>Nom</th><th>Prix</th><th>Durée</th><th></th><th></th></tr>
-          ${planRows || `<tr><td colspan="6" style="color:var(--ink-soft)">Aucun forfait.</td></tr>`}
+          <tr><th>Code</th><th>Nom</th><th>Prix</th><th>Durée</th><th>Appareils</th><th></th><th></th></tr>
+          ${planRows || `<tr><td colspan="7" style="color:var(--ink-soft)">Aucun forfait.</td></tr>`}
         </table>
         <h2>Ajouter / modifier un forfait</h2>
         <form class="inline" method="post" action="/admin/routers/${router.id}/plans">
@@ -276,6 +284,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
           <label>Nom <input name="label" placeholder="3 jours" size="10" required></label>
           <label>Prix HTG <input name="price_htg" type="number" min="20" size="6" required></label>
           <label>Durée RouterOS <input name="uptime" placeholder="3d" size="5" required></label>
+          <label>Appareils <input name="shared_users" type="number" min="1" max="50" value="1" size="3" required></label>
           <button type="submit">Enregistrer</button>
         </form>
       </div>
@@ -327,18 +336,102 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       </table>
     </div>
 
-    <div class="card">
-      <h2 style="margin-top:0">Derniers vouchers</h2>
-      <table>
-        <tr><th>Code</th><th>Forfait</th><th>Origine</th><th>État</th><th>Créé</th><th></th></tr>
-        ${voucherRows || `<tr><td colspan="6" style="color:var(--ink-soft)">Aucun voucher.</td></tr>`}
-      </table>
+    <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <div><h2 style="margin:0">Vouchers</h2>
+        <p class="sub" style="margin:2px 0 0">${voucherCount} code(s) — gestion, suppression, impression.</p></div>
+      <a class="btn" href="/admin/routers/${router.id}/vouchers">Gérer les vouchers</a>
     </div>
 
     <form method="post" action="/admin/routers/${router.id}/delete"
           onsubmit="return confirm('Supprimer ce routeur et tout son historique ?')">
       <button class="danger">Supprimer ce routeur</button>
-    </form>`, { active: "routers" }));
+    </form>`, { active: "routers", autorefresh: true }));
+});
+
+// Page dédiée aux vouchers d'un routeur (la fiche routeur reste légère).
+adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) => {
+  const router = await getRouter(Number(req.params.id));
+  if (!router) return res.redirect("/admin/routers");
+  const [vouchers, sessions, plans] = await Promise.all([
+    listVouchers(router.id, 500), listSessions(router.id), listPlans(router.id),
+  ]);
+  const online = new Set(sessions.map((s) => s.username));
+  const activePlans = plans.filter((p) => p.active);
+  const filter = String(req.query.q || "").toUpperCase();
+  const shown = filter ? vouchers.filter((v) => v.code.includes(filter)) : vouchers;
+
+  const rows = shown.map((v) => `
+    <tr>
+      <td class="mono"><strong>${esc(v.code)}</strong></td>
+      <td>
+        <form method="post" action="/admin/routers/${router.id}/vouchers/${v.id}/plan"
+              style="margin:0;display:flex;gap:6px">
+          <select name="plan_code" onchange="this.form.submit()">
+            ${activePlans.map((p) => `<option value="${esc(p.code)}"${p.id === v.plan_id ? " selected" : ""}>${esc(p.label)}</option>`).join("")}
+          </select>
+        </form>
+      </td>
+      <td>${v.source === "order" ? "vente en ligne" : "lot"}</td>
+      <td>${online.has(v.code) ? `<span class="pill ok">connecté</span>`
+        : v.status === "ON_ROUTER" ? `<span class="pill ok">sur le routeur</span>`
+        : `<span class="pill wait">en file</span>`}</td>
+      <td style="color:var(--ink-soft);font-size:12px">${new Date(v.created_at).toLocaleString("fr-FR")}</td>
+      <td style="display:flex;gap:6px">
+        <a class="btn ghost" href="/admin/print?ids=${v.id}">imprimer</a>
+        <form method="post" action="/admin/routers/${router.id}/vouchers/${v.id}/delete"
+              style="margin:0" onsubmit="return confirm('Supprimer le code ${esc(v.code)} ? Le client sera déconnecté.')">
+          <button class="danger">supprimer</button></form>
+      </td>
+    </tr>`).join("");
+
+  res.type("html").send(layout(`Vouchers — ${router.name}`, `
+    <h1>Vouchers <span class="sub" style="font-size:14px">— ${esc(router.name)}</span></h1>
+    <p class="sub"><a href="/admin/routers/${router.id}">← Retour à la fiche routeur</a></p>
+
+    <div class="card">
+      <h2 style="margin-top:0">Générer un lot</h2>
+      <form class="inline" method="post" action="/admin/routers/${router.id}/vouchers">
+        <label>Forfait
+          <select name="plan_code" required>
+            ${activePlans.map((p) => `<option value="${esc(p.code)}">${esc(p.label)} — ${p.price_htg} HTG (${p.shared_users} app.)</option>`).join("")}
+          </select></label>
+        <label>Quantité <input name="count" type="number" min="1" max="200" value="10" required></label>
+        <button type="submit" ${activePlans.length === 0 ? "disabled" : ""}>Générer + imprimer</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <h2 style="margin:0">${shown.length} voucher(s)</h2>
+        <form class="inline" method="get" style="margin:0">
+          <input name="q" placeholder="Chercher un code" value="${esc(req.query.q || "")}">
+          <button class="ghost" type="submit">Filtrer</button>
+        </form>
+      </div>
+      <table style="margin-top:12px">
+        <tr><th>Code</th><th>Forfait</th><th>Origine</th><th>État</th><th>Créé</th><th></th></tr>
+        ${rows || `<tr><td colspan="6" style="color:var(--ink-soft)">Aucun voucher.</td></tr>`}
+      </table>
+    </div>`, { active: "routers", autorefresh: true }));
+});
+
+// Change le forfait d'un voucher : le compte est recréé sur le routeur avec
+// la nouvelle durée / le nouveau nombre d'appareils.
+adminRouter.post("/admin/routers/:id/vouchers/:vid/plan", requireAdmin, async (req, res) => {
+  const routerId = Number(req.params.id);
+  const vid = Number(req.params.vid);
+  const plan = await getPlan(routerId, String((req.body || {}).plan_code || ""));
+  if (plan) {
+    const v = await setVoucherPlan(routerId, vid, plan.id);
+    if (v) {
+      await queueCommand(routerId, "remove", { code: v.code });
+      await queueCommand(routerId, "add", {
+        code: v.code, uptime: plan.uptime, profile: `mv-${plan.code}`,
+        shared: plan.shared_users, comment: `plan ${plan.code}`,
+      });
+    }
+  }
+  res.redirect(`/admin/routers/${routerId}/vouchers`);
 });
 
 // Supprime un voucher : retiré de la liste ici, et une commande 'remove' est
@@ -375,6 +468,7 @@ adminRouter.post("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
     await upsertPlan({
       routerId: id, code: String(code).toLowerCase(), label: String(label),
       priceHtg: Number(price_htg), uptime: String(uptime),
+      sharedUsers: Number((req.body || {}).shared_users) || 1,
     });
   }
   res.redirect(`/admin/routers/${id}`);
@@ -399,7 +493,9 @@ adminRouter.post("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =
       try {
         const v = await createVoucher({
           routerId: id, code: generateVoucherCode(8), planId: plan.id,
-          uptime: plan.uptime, source: "batch", comment: `lot ${new Date().toISOString().slice(0, 10)}`,
+          uptime: plan.uptime, source: "batch",
+          profile: `mv-${plan.code}`, sharedUsers: plan.shared_users,
+          comment: `lot ${new Date().toISOString().slice(0, 10)}`,
         });
         ids.push(v.id);
         break;

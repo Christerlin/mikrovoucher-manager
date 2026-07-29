@@ -81,6 +81,15 @@ a{color:var(--accent)}
   <form method="post" action="/admin/logout"><button class="ghost">Quitter</button></form>
 </header>
 <main>${body}</main>
+<script>
+// Confirmations : le texte vit dans data-confirm (contexte attribut HTML,
+// correctement échappé). On n'injecte jamais de données dans du JS inline —
+// un simple apostrophe y suffirait à casser, voire détourner, le handler.
+document.addEventListener("submit", function (e) {
+  var msg = e.target && e.target.dataset ? e.target.dataset.confirm : null;
+  if (msg && !confirm(msg)) e.preventDefault();
+}, true);
+</script>
 </body>
 </html>`;
 }

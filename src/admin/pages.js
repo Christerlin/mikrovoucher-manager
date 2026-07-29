@@ -244,7 +244,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       <td class="mono">${esc(s.uptime || "–")}</td>
       <td>${fmtBytes(s.bytes_in)} / ${fmtBytes(s.bytes_out)}</td>
       <td><form method="post" action="/admin/routers/${router.id}/kick"
-                style="margin:0" onsubmit="return confirm('Déconnecter et supprimer ${esc(s.username)} ?')">
+                style="margin:0" data-confirm="Déconnecter et supprimer ${esc(s.username)} ?">
         <input type="hidden" name="code" value="${esc(s.username)}">
         <button class="danger">Déconnecter</button></form></td>
     </tr>`).join("");
@@ -384,7 +384,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
             '<td class="mono">' + esc(s.uptime || "–") + '</td>' +
             '<td>' + fmtBytes(s.bytesIn) + ' / ' + fmtBytes(s.bytesOut) + '</td>' +
             '<td><form method="post" action="/admin/routers/' + ROUTER_ID + '/kick" style="margin:0"' +
-              ' onsubmit="return confirm(\'Déconnecter et supprimer ' + esc(s.username) + ' ?\')">' +
+              ' data-confirm="Déconnecter et supprimer ' + esc(s.username) + ' ?">' +
               '<input type="hidden" name="code" value="' + esc(s.username) + '">' +
               '<button class="danger">Déconnecter</button></form></td>' +
             '</tr>';
@@ -414,7 +414,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
 
 
     <form method="post" action="/admin/routers/${router.id}/delete"
-          onsubmit="return confirm('Supprimer ce routeur et tout son historique ?')">
+          data-confirm="Supprimer ce routeur et tout son historique ?">
       <button class="danger">Supprimer ce routeur</button>
     </form>`, { active: "routers" }));
 });
@@ -455,7 +455,7 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
       <td class="mono">${esc(p.uptime)}</td>
       <td>${p.shared_users}</td>
       <td><form method="post" action="/admin/routers/${router.id}/plans/delete" style="margin:0"
-                onsubmit="return confirm('Retirer le forfait ${esc(p.label)} ?')">
+                data-confirm="Retirer le forfait ${esc(p.label)} ?">
         <input type="hidden" name="code" value="${esc(p.code)}">
         <button class="danger">Retirer</button></form></td>
     </tr>`).join("");
@@ -543,7 +543,7 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
       <td style="display:flex;gap:6px">
         <a class="btn ghost" href="/admin/print?ids=${v.id}">Imprimer</a>
         <form method="post" action="/admin/routers/${router.id}/vouchers/${v.id}/delete"
-              style="margin:0" onsubmit="return confirm('Supprimer le code ${esc(v.code)} ? Le client sera déconnecté.')">
+              style="margin:0" data-confirm="Supprimer le code ${esc(v.code)} ? Le client sera déconnecté.">
           <button class="danger">Supprimer</button></form>
       </td>
     </tr>`).join("");

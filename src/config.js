@@ -13,9 +13,14 @@ export const config = {
   // Mot de passe du dashboard (un seul admin : c'est VOTRE instance).
   adminPassword: required("ADMIN_PASSWORD"),
 
-  // URL publique de cette application (utilisée pour générer les scripts
-  // routeur et la Return URL Pay'm). Ex : https://mon-manager.onrender.com
-  publicUrl: (process.env.PUBLIC_URL || "").replace(/\/$/, ""),
+  // URL publique de cette application (scripts routeur + Return URL Pay'm).
+  // Accepte aussi un simple hôte : Render fournit "app.onrender.com" via
+  // fromService/host, on complète alors le schéma.
+  publicUrl: (function () {
+    var u = (process.env.PUBLIC_URL || "").trim().replace(/\/$/, "");
+    if (!u) return "";
+    return /^https?:\/\//.test(u) ? u : "https://" + u;
+  })(),
 
   // Pay'm (agrégateur Moncash / Natcash / Kashpaw). Optionnel : sans
   // PAYM_CLIENT_ID, le paiement en ligne est désactivé mais le reste

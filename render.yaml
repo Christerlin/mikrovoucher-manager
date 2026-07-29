@@ -17,7 +17,18 @@ services:
         generateValue: true
       - key: DATABASE_SSL_INSECURE
         value: "true"
+      # Render remplit l'URL publique du service : les scripts routeur générés
+      # pointent ainsi tout de suite au bon endroit.
+      - key: PUBLIC_URL
+        fromService:
+          type: web
+          name: mikrovoucher-manager
+          property: host
+      # À renseigner au déploiement (laisser vide pour démarrer sans paiement).
       - key: PAYM_CLIENT_ID
+        sync: false
+      # Origines des portails captifs, ex : http://lambda.connect,http://172.17.10.1
+      - key: CORS_ORIGINS
         sync: false
 
 databases:

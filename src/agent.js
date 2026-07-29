@@ -7,8 +7,8 @@
 //   GET /agent/ack?id=N -> "ok"
 // Chaque appel met à jour last_seen (état "en ligne" du dashboard).
 
-import { Router } from "express";
-import { getRouterByToken, touchRouter, nextCommand, ackCommand } from "./db.js";
+import express, { Router } from "express";
+import { getRouterByToken, touchRouter, nextCommand, ackCommand, updateRouterInfo } from "./db.js";
 
 export const agentRouter = Router();
 
@@ -54,3 +54,32 @@ agentRouter.get("/agent/ack", async (req, res) => {
     res.status(502).type("text/plain").send("");
   }
 });
+
+// Rapport d'état du routeur, envoyé à chaque cycle de l'agent.
+// Corps texte : identite|version|board|uptime|cpu|freeMem|totalMem|actifs|users
+agentRouter.post("/agent/report",
+  express.text({ type: "*/*", limit: "4kb" }),
+  async (req, res) => {
+    try {
+      const router = await authRouterDevice(req, res);
+      if (!router) return;
+      const parts = String(req.body || "").split("|");
+      const [identity, version, board, uptime, cpuLoad, freeMem, totalMem, activeUsers, totalUsers] = parts;
+      await updateRouterInfo(router.id, {
+        identity: identity || null,
+        version: version || null,
+        board: board || null,
+        uptime: uptime || null,
+        cpuLoad: Number(cpuLoad) || 0,
+        freeMem: Number(freeMem) || 0,
+        totalMem: Number(totalMem) || 0,
+        activeUsers: Number(activeUsers) || 0,
+        totalUsers: Number(totalUsers) || 0,
+        reportedAt: new Date().toISOString(),
+      });
+      res.type("text/plain").send("ok");
+    } catch (err) {
+      console.error("[agent/report]", err.message);
+      res.status(502).type("text/plain").send("");
+    }
+  });

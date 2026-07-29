@@ -44,6 +44,8 @@ export async function initDb() {
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     ALTER TABLE routers ADD COLUMN IF NOT EXISTS portal_url TEXT NOT NULL DEFAULT '';
+    -- Dernier rapport d'état envoyé par l'agent (identité, version, CPU...).
+    ALTER TABLE routers ADD COLUMN IF NOT EXISTS info JSONB;
 
     CREATE TABLE IF NOT EXISTS plans (
       id          SERIAL PRIMARY KEY,
@@ -132,6 +134,10 @@ export async function createRouter({ slug, name, pullToken, portalUrl }) {
 }
 export async function touchRouter(id) {
   await pool.query(`UPDATE routers SET last_seen = now() WHERE id = $1`, [id]);
+}
+export async function updateRouterInfo(id, info) {
+  await pool.query(`UPDATE routers SET info = $2, last_seen = now() WHERE id = $1`,
+    [id, info]);
 }
 export async function deleteRouter(id) {
   await pool.query(`DELETE FROM routers WHERE id = $1`, [id]);

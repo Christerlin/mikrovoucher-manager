@@ -138,6 +138,21 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
       }
     }
   }
+  :do {
+    :local rid [/system identity get name];
+    :local rver [/system resource get version];
+    :local rbrd [/system resource get board-name];
+    :local rupt [/system resource get uptime];
+    :local rcpu [/system resource get cpu-load];
+    :local rfm [/system resource get free-memory];
+    :local rtm [/system resource get total-memory];
+    :local ract [:len [/ip hotspot active find]];
+    :local rusr [:len [/ip hotspot user find]];
+    /tool fetch url=("$backend/agent/report") http-method=post \\
+      http-header-field=("x-router-token: $token") \\
+      http-data=("$rid|$rver|$rbrd|$rupt|$rcpu|$rfm|$rtm|$ract|$rusr") \\
+      keep-result=no;
+  } on-error={}
 }
 /system scheduler
 add name=mikrovoucher-sched interval=15s on-event="/system script run mikrovoucher-agent" \\
@@ -178,10 +193,35 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       <td style="color:var(--ink-soft)">${new Date(v.created_at).toLocaleString("fr-FR")}</td>
     </tr>`).join("");
 
+  const info = router.info || null;
+  const mb = (b) => (b > 0 ? `${Math.round(b / 1048576)} Mo` : "—");
+  const infoCard = info ? `
+    <div class="card">
+      <h2 style="margin-top:0">Informations du routeur <span class="sub" style="font-size:12px">
+        (rapportées par l'agent — ${info.reportedAt ? new Date(info.reportedAt).toLocaleString("fr-FR") : ""})</span></h2>
+      <table>
+        <tr><th>Identité</th><th>Modèle</th><th>RouterOS</th><th>Uptime</th>
+            <th>CPU</th><th>RAM libre</th><th>Connectés</th><th>Comptes hotspot</th></tr>
+        <tr>
+          <td><strong>${esc(info.identity || "—")}</strong></td>
+          <td>${esc(info.board || "—")}</td>
+          <td class="mono">${esc(info.version || "—")}</td>
+          <td class="mono">${esc(info.uptime || "—")}</td>
+          <td>${info.cpuLoad}%</td>
+          <td>${mb(info.freeMem)} / ${mb(info.totalMem)}</td>
+          <td><span class="pill ok">${info.activeUsers} en ligne</span></td>
+          <td>${info.totalUsers}</td>
+        </tr>
+      </table>
+    </div>` : `
+    <div class="card"><p class="sub" style="margin:0">Aucun rapport reçu du routeur pour
+    l'instant — importez le script agent ci-dessous, le premier rapport arrive en ≤ 15 s.</p></div>`;
+
   res.type("html").send(layout(router.name, `
     <h1>${esc(router.name)} ${onlinePill(router.last_seen)}</h1>
     <p class="sub">Slug : <span class="mono">${esc(router.slug)}</span>
       &middot; Portail : <span class="mono">${esc(router.portal_url || "non défini")}</span></p>
+    ${infoCard}
 
     <div class="grid2">
       <div class="card">

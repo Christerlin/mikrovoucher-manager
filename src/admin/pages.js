@@ -312,20 +312,132 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
 
     <div class="card">
       <h2 style="margin-top:0">Clients connectés
-        <span class="pill ok">${sessions.length}</span></h2>
+        <span class="pill ok" id="sessCount">${sessions.length}</span></h2>
       <table>
         <tr><th>Code</th><th>Forfait</th><th>Temps restant</th><th>IP</th><th>MAC</th>
             <th>Connecté depuis</th><th>Données ↓ / ↑</th><th></th></tr>
+        <tbody id="sessBody">
         ${sessionRows || `<tr><td colspan="8" style="color:var(--ink-soft)">Personne connecté pour l'instant.</td></tr>`}
+        </tbody>
       </table>
     </div>
+
+    <script>
+    // Mise a jour sans rechargement : le compte a rebours descend chaque
+    // seconde en local, et on resynchronise avec le routeur toutes les 20 s.
+    (function () {
+      var ROUTER_ID = ${router.id};
+      var UNITS = { w: 604800, d: 86400, h: 3600, m: 60, s: 1 };
+      function toSeconds(str) {
+        str = String(str || "").trim();
+        if (!str) return null;
+        var total = 0, m, re = /(\d+)([wdhms])/g;
+        while ((m = re.exec(str)) !== null) total += parseInt(m[1], 10) * UNITS[m[2]];
+        if (total === 0) {
+          var p = str.split(":").map(Number);
+          if (p.length === 3 && p.every(function (n) { return !isNaN(n); })) total = p[0]*3600 + p[1]*60 + p[2];
+          else if (p.length === 2 && p.every(function (n) { return !isNaN(n); })) total = p[0]*60 + p[1];
+        }
+        return total > 0 ? total : null;
+      }
+      function fmt(sec) {
+        var d = Math.floor(sec/86400); sec %= 86400;
+        var h = Math.floor(sec/3600); sec %= 3600;
+        var mn = Math.floor(sec/60), s = sec % 60;
+        function p(n) { return (n < 10 ? "0" : "") + n; }
+        return (d > 0 ? d + "j " : "") + p(h) + ":" + p(mn) + ":" + p(s);
+      }
+      function fmtBytes(n) {
+        n = Number(n) || 0;
+        if (n >= 1073741824) return (n/1073741824).toFixed(1) + " Go";
+        if (n >= 1048576) return Math.round(n/1048576) + " Mo";
+        if (n >= 1024) return Math.round(n/1024) + " Ko";
+        return n + " o";
+      }
+      function esc(t) {
+        return String(t == null ? "" : t).replace(/[&<>"']/g, function (c) {
+          return { "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c];
+        });
+      }
+
+      var body = document.getElementById("sessBody");
+      var count = document.getElementById("sessCount");
+
+      function render(sessions) {
+        count.textContent = sessions.length;
+        if (sessions.length === 0) {
+          body.innerHTML = '<tr><td colspan="8" style="color:var(--ink-soft)">Personne connecté pour l\'instant.</td></tr>';
+          return;
+        }
+        body.innerHTML = sessions.map(function (s) {
+          var left = toSeconds(s.timeLeft);
+          return '<tr>' +
+            '<td class="mono"><strong>' + esc(s.username) + '</strong></td>' +
+            '<td>' + (s.planLabel
+              ? esc(s.planLabel) + (s.devices > 1 ? ' <span class="pill wait">' + s.devices + ' app.</span>' : '')
+              : '<span style="color:var(--ink-soft)">hors manager</span>') + '</td>' +
+            '<td class="mono">' + (left
+              ? '<strong data-left="' + left + '">' + fmt(left) + '</strong>'
+              : '<span style="color:var(--ink-soft)">illimité</span>') + '</td>' +
+            '<td class="mono">' + esc(s.address || "–") + '</td>' +
+            '<td class="mono" style="font-size:12px">' + esc(s.mac || "–") + '</td>' +
+            '<td class="mono">' + esc(s.uptime || "–") + '</td>' +
+            '<td>' + fmtBytes(s.bytesIn) + ' / ' + fmtBytes(s.bytesOut) + '</td>' +
+            '<td><form method="post" action="/admin/routers/' + ROUTER_ID + '/kick" style="margin:0"' +
+              ' onsubmit="return confirm(\'Déconnecter et supprimer ' + esc(s.username) + ' ?\')">' +
+              '<input type="hidden" name="code" value="' + esc(s.username) + '">' +
+              '<button class="danger">Déconnecter</button></form></td>' +
+            '</tr>';
+        }).join("");
+      }
+
+      // Compte a rebours local : une seconde a la fois, sans appel reseau.
+      setInterval(function () {
+        body.querySelectorAll("[data-left]").forEach(function (el) {
+          var left = parseInt(el.dataset.left, 10) - 1;
+          if (left <= 0) { el.dataset.left = 0; el.textContent = "00:00:00"; return; }
+          el.dataset.left = left;
+          el.textContent = fmt(left);
+        });
+      }, 1000);
+
+      // Resynchronisation avec les vraies valeurs du routeur.
+      setInterval(function () {
+        fetch("/admin/api/routers/" + ROUTER_ID + "/live", { headers: { "Accept": "application/json" } })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) { if (d && d.sessions) render(d.sessions); })
+          .catch(function () { /* on retentera */ });
+      }, 20000);
+    })();
+    </script>
 
 
 
     <form method="post" action="/admin/routers/${router.id}/delete"
           onsubmit="return confirm('Supprimer ce routeur et tout son historique ?')">
       <button class="danger">Supprimer ce routeur</button>
-    </form>`, { active: "routers", autorefresh: true }));
+    </form>`, { active: "routers" }));
+});
+
+// Données rafraîchies sans recharger la page (fiche routeur).
+adminRouter.get("/admin/api/routers/:id/live", requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const [router, sessions] = await Promise.all([getRouter(id), listSessions(id)]);
+    if (!router) return res.status(404).json({ error: "introuvable" });
+    res.json({
+      lastSeen: router.last_seen,
+      info: router.info || null,
+      sessions: sessions.map((s) => ({
+        username: s.username, address: s.address, mac: s.mac, uptime: s.uptime,
+        bytesIn: Number(s.bytes_in), bytesOut: Number(s.bytes_out),
+        timeLeft: s.time_left, planLabel: s.plan_label, devices: s.shared_users,
+      })),
+    });
+  } catch (err) {
+    console.error("[live]", err.message);
+    res.status(502).json({ error: "indisponible" });
+  }
 });
 
 // Page dédiée aux forfaits d'un routeur.
@@ -470,7 +582,7 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
         <tr><th>Code</th><th>Forfait</th><th>Origine</th><th>État</th><th>Créé</th><th></th></tr>
         ${rows || `<tr><td colspan="6" style="color:var(--ink-soft)">Aucun voucher.</td></tr>`}
       </table>
-    </div>`, { active: "routers", autorefresh: true }));
+    </div>`, { active: "routers" }));
 });
 
 // Change le forfait d'un voucher : le compte est recréé sur le routeur avec

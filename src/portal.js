@@ -51,6 +51,7 @@ portalRouter.get("/api/portal/:slug/plans", rateLimit(60), async (req, res) => {
     const plans = await listPlans(router.id);
     res.json(plans.filter((p) => p.active).map((p) => ({
       id: p.code, label: p.label, htg: p.price_htg,
+      uptime: p.uptime, devices: p.shared_users,
     })));
   } catch (err) {
     console.error("[plans]", err.message);

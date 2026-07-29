@@ -7,7 +7,7 @@ export function esc(s) {
     .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
-export function layout(title, body, { active = "", autorefresh = false } = {}) {
+export function layout(title, body, { active = "" } = {}) {
   const nav = [
     ["/admin/routers", "Routeurs", "routers"],
     ["/admin/orders", "Ventes", "orders"],
@@ -74,26 +74,13 @@ a{color:var(--accent)}
 @media(max-width:700px){.grid2{grid-template-columns:1fr}}
 </style>
 </head>
-<body${autorefresh ? ' data-autorefresh="1"' : ''}>
+<body>
 <header>
   <span class="brand">Mikrovoucher</span>
   <nav>${nav}</nav>
   <form method="post" action="/admin/logout"><button class="ghost">Quitter</button></form>
 </header>
 <main>${body}</main>
-<script>
-// Rafraichissement auto (30 s) des pages de suivi. Suspendu pendant une saisie
-// ou quand un menu est ouvert, pour ne jamais interrompre l'utilisateur.
-(function () {
-  if (!document.body.dataset.autorefresh) return;
-  setInterval(function () {
-    var el = document.activeElement;
-    if (el && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(el.tagName)) return;
-    if (window.getSelection && String(window.getSelection())) return;
-    location.reload();
-  }, 30000);
-})();
-</script>
 </body>
 </html>`;
 }

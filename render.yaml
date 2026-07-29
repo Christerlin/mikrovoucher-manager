@@ -9,14 +9,13 @@ services:
     startCommand: npm start
     healthCheckPath: /health
     envVars:
+      # Chaîne de connexion PostgreSQL. Neon (https://neon.tech) est recommandé :
+      # offre gratuite qui n'expire pas, contrairement aux bases gratuites Render.
+      # Utilisez la chaîne "direct" (sans -pooler) et gardez ?sslmode=require.
       - key: DATABASE_URL
-        fromDatabase:
-          name: mikrovoucher-db
-          property: connectionString
+        sync: false
       - key: ADMIN_PASSWORD
         generateValue: true
-      - key: DATABASE_SSL_INSECURE
-        value: "true"
       # Render remplit l'URL publique du service : les scripts routeur générés
       # pointent ainsi tout de suite au bon endroit.
       - key: PUBLIC_URL
@@ -30,7 +29,3 @@ services:
       # Origines des portails captifs, ex : http://lambda.connect,http://172.17.10.1
       - key: CORS_ORIGINS
         sync: false
-
-databases:
-  - name: mikrovoucher-db
-    plan: free

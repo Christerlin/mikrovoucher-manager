@@ -22,17 +22,24 @@ CGNAT** (Starlink, 4G) : les routeurs se connectent en **sortant**, aucun port
 
 ## Déploiement (Render, ~10 min)
 
-1. Forkez ce dépôt, puis sur [Render](https://render.com) :
-   **New → Blueprint** → sélectionnez votre fork (le fichier `render.yaml`
-   crée le service web + la base PostgreSQL).
-2. Renseignez `PAYM_CLIENT_ID` (optionnel — laissez vide pour commencer sans
-   paiement en ligne).
+1. **Base de données** : créez un projet sur [Neon](https://neon.tech)
+   (offre gratuite qui n'expire pas) et copiez la chaîne de connexion
+   *direct* (sans `-pooler`, en gardant `?sslmode=require`).
+2. Forkez ce dépôt, puis sur [Render](https://render.com) :
+   **New → Blueprint** → sélectionnez votre fork. Renseignez :
+   - `DATABASE_URL` : la chaîne Neon
+   - `PAYM_CLIENT_ID` : votre `pp_...` (laissez vide pour démarrer sans
+     paiement en ligne)
+   - `CORS_ORIGINS` : les origines de vos portails captifs
 3. Ouvrez `https://votre-app.onrender.com/admin` — le mot de passe admin est
-   dans les variables d'environnement du service (`ADMIN_PASSWORD`).
-4. Ajoutez `PUBLIC_URL=https://votre-app.onrender.com` et, dès que vos portails
-   sont en place, `CORS_ORIGINS=http://votre-dns-hotspot,…`
-5. Plan gratuit Render : le service s'endort après ~15 min. Ajoutez un ping
-   [UptimeRobot](https://uptimerobot.com) sur `/health` toutes les 5 min.
+   généré par Render, visible dans l'onglet *Environment* (`ADMIN_PASSWORD`).
+4. Plan gratuit Render : le service s'endort après ~15 min. Ajoutez un ping
+   [UptimeRobot](https://uptimerobot.com) sur `/health` toutes les 5 min, sinon
+   un client qui revient de paiement attend le réveil du service.
+
+> Toute base PostgreSQL fait l'affaire (Neon, Supabase, Render, la vôtre).
+> Évitez simplement les offres gratuites qui **expirent** : vous y perdriez
+> les vouchers et l'historique des ventes.
 
 ## Brancher un routeur MikroTik
 

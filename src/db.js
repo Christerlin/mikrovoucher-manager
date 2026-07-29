@@ -26,9 +26,15 @@ const pool = new pg.Pool({
   connectionString: config.databaseUrl,
   ssl: buildDbSsl(),
   // Échouer vite plutôt que pendre (offres gratuites : la base s'endort).
-  connectionTimeoutMillis: 5000,
+  connectionTimeoutMillis: 8000,
   statement_timeout: 8000,
   idle_in_transaction_session_timeout: 8000,
+  // Peu de connexions : les offres gratuites (Neon, Supabase) en allouent peu,
+  // et la charge ici est faible (quelques routeurs, du polling léger).
+  max: Number(process.env.DB_POOL_MAX || 5),
+  // Rendre les connexions inactives : une base "serverless" se met en veille,
+  // garder des sockets ouvertes ne sert à rien et gêne la reconnexion.
+  idleTimeoutMillis: 30000,
 });
 pool.on("error", (err) => console.error("[db] erreur du pool:", err.message));
 

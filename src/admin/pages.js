@@ -6,7 +6,7 @@ import {
   listRouters, getRouter, createRouter, deleteRouter,
   listPlans, upsertPlan, removePlan, activatePlan, getPlan,
   createVoucher, listVouchers, getVouchersByIds, deleteVoucher, setVoucherPlan,
-  listSessions, queueCommand,
+  listSessions, queueCommand, activeVouchers, resyncVouchers,
   listOrders, salesSummary, financeSummary, cashSummary, stockByPlan,
   salesByDay, salesByPlan, salesByMethod, allSales,
 } from "../db.js";
@@ -256,8 +256,9 @@ add dst-host=${host} comment="mikrovoucher manager"
 adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
-  const [plans, vouchers, sessions] = await Promise.all([
+  const [plans, vouchers, sessions, attendus] = await Promise.all([
     listPlans(router.id), listVouchers(router.id, 500), listSessions(router.id),
+    activeVouchers(router.id),
   ]);
   const base = publicBase(req);
 
@@ -324,11 +325,33 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
     <div class="card"><p class="sub" style="margin:0">Aucun rapport reçu du routeur pour
     l'instant. Importez le script agent ci-dessous, le premier rapport arrive en ≤ 15 s.</p></div>`;
 
+  // Le routeur compte aussi ses propres comptes (admin, anciens vouchers), donc
+  // seul un écart important compte : il signale un routeur remis à zéro ou
+  // restauré, dont les codes vendus ont disparu.
+  const surRouteur = info ? Number(info.totalUsers) || 0 : null;
+  const ecart = surRouteur !== null && attendus.length > 0 &&
+    surRouteur < attendus.length * 0.5;
+  const alerte = !ecart ? "" : `
+    <div class="card" style="border-color:var(--warn)">
+      <h2 style="margin-top:0;color:var(--warn)">Les codes semblent absents du routeur</h2>
+      <p class="sub" style="margin:0 0 12px">Le manager compte
+        <strong>${attendus.length}</strong> voucher(s) actif(s), mais le routeur
+        n'annonce que <strong>${surRouteur}</strong> compte(s). Cela arrive après
+        une remise à zéro ou la restauration d'une ancienne sauvegarde.
+        La resynchronisation recrée les codes manquants ; ceux déjà présents
+        sont ignorés.</p>
+      <form method="post" action="/admin/routers/${router.id}/resync" style="margin:0"
+            data-confirm="Recréer les ${attendus.length} vouchers actifs sur le routeur ?">
+        <button type="submit">Resynchroniser les vouchers</button>
+      </form>
+    </div>`;
+
   res.type("html").send(layout(router.name, `
     <h1>${esc(router.name)} <span id="statePill">${onlinePill(router.last_seen)}</span></h1>
     <p class="sub">Slug : <span class="mono">${esc(router.slug)}</span>
       &middot; Portail : <span class="mono">${esc(router.portal_url || "non défini")}</span></p>
     ${infoCard}
+    ${alerte}
 
     <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
       <a class="btn" href="/admin/routers/${router.id}/vouchers">Vouchers (${voucherCount})</a>
@@ -602,6 +625,14 @@ adminRouter.post("/admin/routers/:id/vouchers/:vid/delete", requireAdmin, async 
   const removed = await deleteVoucher(routerId, Number(req.params.vid));
   if (removed) await queueCommand(routerId, "remove", { code: removed.code });
   res.redirect(`/admin/routers/${routerId}`);
+});
+
+// Recrée tous les vouchers actifs sur le routeur (réparation après reset).
+adminRouter.post("/admin/routers/:id/resync", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const n = await resyncVouchers(id);
+  console.log(`[resync] ${n} voucher(s) remis en file pour le routeur ${id}`);
+  res.redirect(`/admin/routers/${id}`);
 });
 
 // Déconnecte un client : on supprime son compte hotspot sur le routeur.

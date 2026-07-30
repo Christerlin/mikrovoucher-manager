@@ -430,6 +430,46 @@ export async function markVouchersUsed(routerId, rows) {
   }
 }
 
+// Vouchers qui devraient exister sur le routeur en ce moment.
+export async function activeVouchers(routerId) {
+  const { rows } = await pool.query(
+    `SELECT v.code, v.plan_id, p.uptime, p.code AS plan_code,
+            p.shared_users, p.rate_limit
+       FROM vouchers v JOIN plans p ON p.id = v.plan_id
+      WHERE v.router_id = $1 AND v.expired_at IS NULL`, [routerId]);
+  return rows;
+}
+
+// Remet en file la création de tous les vouchers actifs. L'agent ignore ceux
+// qui existent déjà, donc c'est sans risque : sert à réparer un routeur remis
+// à zéro ou restauré depuis une vieille sauvegarde.
+export async function resyncVouchers(routerId) {
+  const list = await activeVouchers(routerId);
+  if (list.length === 0) return 0;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const v of list) {
+      await client.query(
+        `INSERT INTO commands (router_id, action, payload) VALUES ($1,'add',$2)`,
+        [routerId, {
+          code: v.code, uptime: v.uptime, profile: `mv-${v.plan_code}`,
+          shared: v.shared_users, rate: v.rate_limit, comment: "resync",
+        }]);
+    }
+    await client.query(
+      `UPDATE vouchers SET status='QUEUED' WHERE router_id=$1 AND expired_at IS NULL`,
+      [routerId]);
+    await client.query("COMMIT");
+    return list.length;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // ----------------------------------------------------------------- orders --
 export async function createOrder({ reference, routerId, planId, amountHtg, method, claimHash, retrievalPin, transactionId }) {
   await pool.query(

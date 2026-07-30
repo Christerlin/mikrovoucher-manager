@@ -32,26 +32,27 @@ try {
    perceptuel entre statuts sous daltonisme). Ne pas retoucher à l'oeil :
    repasser par scripts/validate_palette.js du guide dataviz.
    Le vert est la couleur d'action ; les statuts vivent sur d'autres teintes
-   pour qu'un bouton vert ne se lise pas comme "tout va bien". */
+   pour qu'un bouton vert ne se lise pas comme "tout va bien".
+   Le clair est la base — mêmes couleurs que le portail, lisible dehors. */
 :root{
-  --paper:#0b0f0d; --card:#151b18; --ink:#e6efe9; --ink-soft:#8ea69a;
-  --line:#26312c; --accent:#16a34a; --accent-dark:#15803d;
-  --ok:#0891b2; --warn:#d97706; --err:#e11d48;
-  --grain:rgba(255,255,255,.03); --shadow:rgba(0,0,0,.4);
-}
-@media (prefers-color-scheme: light){
-  :root:not([data-theme]){
-    --paper:#eef2ef; --card:#ffffff; --ink:#111c17; --ink-soft:#5c7268;
-    --line:#dde5e0; --accent:#16a34a; --accent-dark:#15803d;
-    --ok:#0891b2; --warn:#d97706; --err:#e11d48;
-    --grain:rgba(17,28,23,.04); --shadow:rgba(17,28,23,.10);
-  }
-}
-:root[data-theme="light"]{
   --paper:#eef2ef; --card:#ffffff; --ink:#111c17; --ink-soft:#5c7268;
   --line:#dde5e0; --accent:#16a34a; --accent-dark:#15803d;
   --ok:#0891b2; --warn:#d97706; --err:#e11d48;
   --grain:rgba(17,28,23,.04); --shadow:rgba(17,28,23,.10);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme]){
+    --paper:#0b0f0d; --card:#151b18; --ink:#e6efe9; --ink-soft:#8ea69a;
+    --line:#26312c; --accent:#16a34a; --accent-dark:#15803d;
+    --ok:#0891b2; --warn:#d97706; --err:#e11d48;
+    --grain:rgba(255,255,255,.03); --shadow:rgba(0,0,0,.4);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0b0f0d; --card:#151b18; --ink:#e6efe9; --ink-soft:#8ea69a;
+  --line:#26312c; --accent:#16a34a; --accent-dark:#15803d;
+  --ok:#0891b2; --warn:#d97706; --err:#e11d48;
+  --grain:rgba(255,255,255,.03); --shadow:rgba(0,0,0,.4);
 }
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
@@ -186,7 +187,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   if (!btn) return;
   function actuel() {
     if (document.documentElement.dataset.theme) return document.documentElement.dataset.theme;
-    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    // Sans choix enregistré : clair par défaut, sombre si le système le demande.
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
   btn.addEventListener("click", function () {
     var suivant = actuel() === "dark" ? "light" : "dark";

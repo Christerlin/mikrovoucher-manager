@@ -12,7 +12,8 @@ app.set("trust proxy", config.trustProxy);
 // Les rapports de l'agent arrivent en texte brut, quel que soit le Content-Type
 // envoyé par /tool fetch. Ce parseur DOIT passer avant json/urlencoded, sinon
 // ceux-ci consomment le corps et l'agent reçoit un objet au lieu du texte.
-app.use(["/agent/report", "/agent/sessions"], express.text({ type: "*/*", limit: "64kb" }));
+app.use(["/agent/report", "/agent/sessions", "/agent/users"],
+  express.text({ type: "*/*", limit: "256kb" }));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));

@@ -10,7 +10,7 @@
 import { Router } from "express";
 import {
   getRouterByToken, touchRouter, nextCommand, ackCommand,
-  updateRouterInfo, replaceSessions,
+  updateRouterInfo, replaceSessions, markVouchersUsed,
 } from "./db.js";
 
 export const agentRouter = Router();
@@ -113,6 +113,28 @@ agentRouter.post("/agent/report",
       res.status(502).type("text/plain").send("");
     }
   });
+
+// Vouchers déjà utilisés (uptime > 0 sur le routeur). Seuls ceux-là sont
+// envoyés : c'est tout ce dont le manager a besoin, et la charge reste faible.
+// Corps texte, une ligne par code : code,uptime,octets
+agentRouter.post("/agent/users", async (req, res) => {
+  try {
+    const router = await authRouterDevice(req, res);
+    if (!router) return;
+    const rows = rawBody(req).split("\n")
+      .map((l) => l.trim()).filter(Boolean)
+      .map((line) => {
+        const [code, uptime, bytes] = line.split(",");
+        return { code: code || "", uptime: uptime || null, bytes: Number(bytes) || 0 };
+      })
+      .filter((r) => r.code);
+    await markVouchersUsed(router.id, rows);
+    res.type("text/plain").send("ok");
+  } catch (err) {
+    console.error("[agent/users]", err.message);
+    res.status(502).type("text/plain").send("");
+  }
+});
 
 // Instantané des sessions hotspot actives.
 // Corps texte, une session par ligne : user,ip,mac,uptime,bytesIn,bytesOut

@@ -107,8 +107,16 @@ export async function initDb() {
       status      TEXT NOT NULL DEFAULT 'QUEUED', -- QUEUED | ON_ROUTER
       command_id  INT REFERENCES commands(id),
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      -- Première utilisation constatée sur le routeur. Pour un voucher vendu
+      -- en espèces, c'est le meilleur indice qu'il a bien été vendu.
+      used_at     TIMESTAMPTZ,
+      used_uptime TEXT,
+      used_bytes  BIGINT DEFAULT 0,
       UNIQUE (router_id, code)
     );
+    ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ;
+    ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_uptime TEXT;
+    ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_bytes BIGINT DEFAULT 0;
 
     CREATE TABLE IF NOT EXISTS orders (
       reference           TEXT PRIMARY KEY,
@@ -310,7 +318,8 @@ export async function listVouchers(routerId, limit = 100) {
   const { rows } = await pool.query(
     `SELECT v.*, p.label AS plan_label, p.price_htg
        FROM vouchers v LEFT JOIN plans p ON p.id = v.plan_id
-      WHERE v.router_id = $1 ORDER BY v.id DESC LIMIT $2`,
+      WHERE v.router_id = $1
+      ORDER BY (v.used_at IS NOT NULL), v.id DESC LIMIT $2`,
     [routerId, limit]);
   return rows;
 }
@@ -351,6 +360,30 @@ export async function ackCommand(routerId, commandId) {
     }
     await client.query("COMMIT");
     return upd.rowCount === 1;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Marque comme utilisés les vouchers que le routeur signale avoir servi.
+// used_at n'est posé qu'une fois : c'est la date de première utilisation.
+export async function markVouchersUsed(routerId, rows) {
+  if (rows.length === 0) return;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const r of rows) {
+      await client.query(
+        `UPDATE vouchers
+            SET used_at = COALESCE(used_at, now()),
+                used_uptime = $3, used_bytes = $4
+          WHERE router_id = $1 AND code = $2`,
+        [routerId, r.code, r.uptime, r.bytes]);
+    }
+    await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -434,6 +467,43 @@ export async function listOrders(limit = 200) {
 const TZ = process.env.BUSINESS_TZ || "America/Port-au-Prince";
 const PAID = "status IN ('PAID','DELIVERED')";
 
+// Recette "espèces" : un voucher d'un lot qui a servi a forcément été vendu.
+// C'est le seul indice fiable dont on dispose pour les ventes de la main à la
+// main, et il évite de compter comme vendu un carnet imprimé mais pas écoulé.
+const CASH = `
+  SELECT v.used_at AS at, p.price_htg AS htg
+    FROM vouchers v JOIN plans p ON p.id = v.plan_id
+   WHERE v.source = 'batch' AND v.used_at IS NOT NULL`;
+
+export async function cashSummary() {
+  const { rows } = await pool.query(`
+    WITH c AS (${CASH}), j AS (SELECT (now() AT TIME ZONE $1)::date AS today)
+    SELECT
+      COALESCE(SUM(htg),0)::int AS total_htg,
+      COUNT(*)::int AS total_count,
+      COALESCE(SUM(htg) FILTER (WHERE (at AT TIME ZONE $1)::date = j.today),0)::int AS today_htg,
+      COUNT(*) FILTER (WHERE (at AT TIME ZONE $1)::date = j.today)::int AS today_count,
+      COALESCE(SUM(htg) FILTER (WHERE (at AT TIME ZONE $1)::date > j.today - 7),0)::int AS week_htg,
+      COALESCE(SUM(htg) FILTER (WHERE date_trunc('month', at AT TIME ZONE $1)
+              = date_trunc('month', j.today)),0)::int AS month_htg
+    FROM c, j`, [TZ]);
+  return rows[0];
+}
+
+// Vouchers d'un lot restant à vendre, par forfait : ce qu'il reste en stock.
+export async function stockByPlan() {
+  const { rows } = await pool.query(`
+    SELECT p.label, r.name AS router_name, p.price_htg,
+           COUNT(*)::int AS restants
+      FROM vouchers v
+      JOIN plans p ON p.id = v.plan_id
+      JOIN routers r ON r.id = v.router_id
+     WHERE v.source = 'batch' AND v.used_at IS NULL
+     GROUP BY p.label, r.name, p.price_htg
+     ORDER BY restants DESC`);
+  return rows;
+}
+
 export async function financeSummary() {
   const { rows } = await pool.query(`
     WITH j AS (SELECT (now() AT TIME ZONE $1)::date AS today)
@@ -464,26 +534,41 @@ export async function salesByDay(days = 30) {
         (now() AT TIME ZONE $1)::date - ($2::int - 1),
         (now() AT TIME ZONE $1)::date,
         '1 day')::date AS jour
+    ),
+    ventes AS (
+      SELECT (created_at AT TIME ZONE $1)::date AS jour, amount_htg AS htg
+        FROM orders WHERE ${PAID}
+      UNION ALL
+      SELECT (v.used_at AT TIME ZONE $1)::date, p.price_htg
+        FROM vouchers v JOIN plans p ON p.id = v.plan_id
+       WHERE v.source = 'batch' AND v.used_at IS NOT NULL
     )
     SELECT b.jour,
-           COALESCE(SUM(o.amount_htg),0)::int AS htg,
-           COUNT(o.*)::int AS ventes
-      FROM bornes b
-      LEFT JOIN orders o
-        ON (o.created_at AT TIME ZONE $1)::date = b.jour AND ${PAID}
+           COALESCE(SUM(x.htg),0)::int AS htg,
+           COUNT(x.*)::int AS ventes
+      FROM bornes b LEFT JOIN ventes x ON x.jour = b.jour
      GROUP BY b.jour ORDER BY b.jour`, [TZ, days]);
   return rows;
 }
 
 export async function salesByPlan() {
   const { rows } = await pool.query(`
+    WITH tout AS (
+      SELECT o.plan_id, o.router_id, o.amount_htg AS htg, 'en ligne' AS canal
+        FROM orders o WHERE ${PAID}
+      UNION ALL
+      SELECT v.plan_id, v.router_id, p.price_htg, 'espèces'
+        FROM vouchers v JOIN plans p ON p.id = v.plan_id
+       WHERE v.source = 'batch' AND v.used_at IS NOT NULL
+    )
     SELECT p.label, r.name AS router_name,
            COUNT(*)::int AS ventes,
-           COALESCE(SUM(o.amount_htg),0)::int AS htg
-      FROM orders o
-      JOIN plans p ON p.id = o.plan_id
-      JOIN routers r ON r.id = o.router_id
-     WHERE ${PAID}
+           COALESCE(SUM(t.htg),0)::int AS htg,
+           COUNT(*) FILTER (WHERE t.canal = 'en ligne')::int AS en_ligne,
+           COUNT(*) FILTER (WHERE t.canal = 'espèces')::int AS especes
+      FROM tout t
+      JOIN plans p ON p.id = t.plan_id
+      JOIN routers r ON r.id = t.router_id
      GROUP BY p.label, r.name
      ORDER BY htg DESC`);
   return rows;
@@ -495,6 +580,26 @@ export async function salesByMethod() {
            COALESCE(SUM(amount_htg),0)::int AS htg
       FROM orders WHERE ${PAID}
      GROUP BY method ORDER BY htg DESC`);
+  return rows;
+}
+
+// Toutes les ventes, tous canaux, pour l'export comptable.
+export async function allSales() {
+  const { rows } = await pool.query(`
+    SELECT o.created_at AS date, r.name AS routeur, p.label AS forfait,
+           o.amount_htg AS montant, 'en ligne' AS canal, o.method AS moyen,
+           o.reference, o.status AS etat,
+           (SELECT code FROM vouchers WHERE id = o.voucher_id) AS code
+      FROM orders o JOIN routers r ON r.id = o.router_id
+      JOIN plans p ON p.id = o.plan_id
+     WHERE ${PAID}
+    UNION ALL
+    SELECT v.used_at, r.name, p.label, p.price_htg, 'espèces', 'espèces',
+           '', 'utilisé', v.code
+      FROM vouchers v JOIN routers r ON r.id = v.router_id
+      JOIN plans p ON p.id = v.plan_id
+     WHERE v.source = 'batch' AND v.used_at IS NOT NULL
+    ORDER BY date DESC`);
   return rows;
 }
 

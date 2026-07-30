@@ -7,7 +7,8 @@ import {
   listPlans, upsertPlan, removePlan, activatePlan, getPlan,
   createVoucher, listVouchers, getVouchersByIds, deleteVoucher, setVoucherPlan,
   listSessions, queueCommand,
-  listOrders, salesSummary, financeSummary, salesByDay, salesByPlan, salesByMethod,
+  listOrders, salesSummary, financeSummary, cashSummary, stockByPlan,
+  salesByDay, salesByPlan, salesByMethod, allSales,
 } from "../db.js";
 import { generateRouterToken, generateVoucherCode } from "../codes.js";
 import { layout, esc } from "./html.js";
@@ -240,6 +241,24 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
     /tool fetch url=("$backend/agent/sessions") http-method=post \\
       http-header-field=("x-router-token: $token") \\
       http-data=$lines keep-result=no;
+  } on-error={}
+  :do {
+    # Codes deja utilises : sert a savoir ce qui a ete vendu (lots en especes).
+    :local used "";
+    :foreach u in=[/ip hotspot user find] do={
+      :local up [/ip hotspot user get $u uptime];
+      :if ($up != "00:00:00") do={
+        :local n [/ip hotspot user get $u name];
+        :local bi 0;
+        :do { :set bi [/ip hotspot user get $u bytes-in]; } on-error={ :set bi 0; }
+        :set used ("$used$n,$up,$bi\\n");
+      }
+    }
+    :if ([:len $used] > 0) do={
+      /tool fetch url=("$backend/agent/users") http-method=post \\
+        http-header-field=("x-router-token: $token") \\
+        http-data=$used keep-result=no;
+    }
   } on-error={}
 }
 /system scheduler
@@ -509,7 +528,8 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
       </td>
       <td>${v.source === "order" ? "vente en ligne" : "lot"}</td>
       <td>${online.has(v.code) ? `<span class="pill ok">connecté</span>`
-        : v.status === "ON_ROUTER" ? `<span class="pill ok">sur le routeur</span>`
+        : v.used_at ? `<span class="pill" style="background:rgba(36,27,19,.08);color:var(--ink-soft)">utilisé</span>`
+        : v.status === "ON_ROUTER" ? `<span class="pill wait">à vendre</span>`
         : `<span class="pill wait">en file</span>`}</td>
       <td style="color:var(--ink-soft);font-size:12px">${new Date(v.created_at).toLocaleString("fr-FR")}</td>
       <td style="display:flex;gap:6px">
@@ -544,7 +564,8 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
 
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-        <h2 style="margin:0">${shown.length} voucher(s)</h2>
+        <h2 style="margin:0">${shown.length} voucher(s)
+          <span class="pill wait">${shown.filter((v) => !v.used_at).length} à vendre</span></h2>
         <form class="inline" method="get" style="margin:0">
           <input name="q" placeholder="Chercher un code" value="${esc(req.query.q || "")}">
           <button class="ghost" type="submit">Filtrer</button>
@@ -700,6 +721,28 @@ body{font-family:system-ui,Arial;margin:20px;background:#fff}
 // --------------------------------------------------------------- ventes ----
 const HTG = (n) => Number(n || 0).toLocaleString("fr-FR");
 
+// Export comptable. Séparateur ';' et BOM : Excel en français ouvre le fichier
+// directement, sans passer par l'assistant d'importation.
+adminRouter.get("/admin/export.csv", requireAdmin, async (req, res) => {
+  const ventes = await allSales();
+  const champ = (v) => {
+    const t = v == null ? "" : String(v);
+    return /[";\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const lignes = [
+    ["Date", "Routeur", "Forfait", "Montant HTG", "Canal", "Moyen", "Référence", "État", "Code"],
+    ...ventes.map((v) => [
+      v.date ? new Date(v.date).toLocaleString("fr-FR") : "",
+      v.routeur, v.forfait, v.montant, v.canal, v.moyen, v.reference, v.etat, v.code,
+    ]),
+  ].map((l) => l.map(champ).join(";")).join("\r\n");
+
+  const jour = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="ventes-${jour}.csv"`);
+  res.send("\uFEFF" + lignes);
+});
+
 // Graphique en barres, une seule série (recette du jour) : une seule teinte,
 // pas de légende, libellé direct uniquement sur le meilleur jour.
 function dailyChart(days) {
@@ -734,12 +777,18 @@ function dailyChart(days) {
 
 adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
   const jours = Math.min(Math.max(Number(req.query.j) || 30, 7), 90);
-  const [orders, parRouteur, fin, parJour, parPlan, parMethode] = await Promise.all([
-    listOrders(200), salesSummary(), financeSummary(),
-    salesByDay(jours), salesByPlan(), salesByMethod(),
-  ]);
+  const [orders, parRouteur, fin, cash, stock, parJour, parPlan, parMethode] =
+    await Promise.all([
+      listOrders(200), salesSummary(), financeSummary(), cashSummary(),
+      stockByPlan(), salesByDay(jours), salesByPlan(), salesByMethod(),
+    ]);
 
-  const moyenne = fin.total_count > 0 ? Math.round(fin.total_htg / fin.total_count) : 0;
+  // Recette globale = paiements en ligne + vouchers de lot effectivement utilisés.
+  const totalHtg = fin.total_htg + cash.total_htg;
+  const totalCount = fin.total_count + cash.total_count;
+  const moyenne = totalCount > 0 ? Math.round(totalHtg / totalCount) : 0;
+  const stockTotal = stock.reduce((a, s) => a + s.restants, 0);
+  const stockValeur = stock.reduce((a, s) => a + s.restants * s.price_htg, 0);
   // Combien de paiements engagés aboutissent : un taux qui chute signale un
   // problème dans le tunnel, pas une baisse de la demande.
   const engages = fin.total_count + fin.expired_count;
@@ -754,7 +803,9 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
 
   const planRows = parPlan.map((p) => `
     <tr><td>${esc(p.label)}</td><td style="color:var(--ink-soft)">${esc(p.router_name)}</td>
-      <td class="num">${p.ventes}</td><td class="num"><strong>${HTG(p.htg)}</strong></td></tr>`).join("");
+      <td class="num">${p.ventes}</td>
+      <td class="num" style="color:var(--ink-soft);font-size:12px">${p.en_ligne} / ${p.especes}</td>
+      <td class="num"><strong>${HTG(p.htg)}</strong></td></tr>`).join("");
   const methodeRows = parMethode.map((m) => `
     <tr><td>${esc(m.method)}</td><td class="num">${m.ventes}</td>
       <td class="num"><strong>${HTG(m.htg)}</strong></td></tr>`).join("");
@@ -783,16 +834,45 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
 
   res.type("html").send(layout("Ventes", `
     <h1>Finances</h1>
-    <p class="sub">Paiements Moncash / Natcash / Kashpaw via Pay'm.</p>
+    <p class="sub">Ventes en ligne et vouchers vendus en espèces.
+      <a class="btn ghost" style="padding:5px 12px;margin-left:8px"
+         href="/admin/export.csv">Exporter en CSV</a></p>
 
     <div class="kpis">
-      ${tuile("Aujourd'hui", HTG(fin.today_htg) + " HTG", fin.today_count + " vente(s)")}
-      ${tuile("7 derniers jours", HTG(fin.week_htg) + " HTG", "")}
-      ${tuile("Ce mois", HTG(fin.month_htg) + " HTG", "")}
-      ${tuile("Total encaissé", HTG(fin.total_htg) + " HTG", fin.total_count + " vente(s)")}
+      ${tuile("Aujourd'hui", HTG(fin.today_htg + cash.today_htg) + " HTG",
+              (fin.today_count + cash.today_count) + " vente(s)")}
+      ${tuile("7 derniers jours", HTG(fin.week_htg + cash.week_htg) + " HTG", "")}
+      ${tuile("Ce mois", HTG(fin.month_htg + cash.month_htg) + " HTG", "")}
+      ${tuile("Total encaissé", HTG(totalHtg) + " HTG", totalCount + " vente(s)")}
       ${tuile("Panier moyen", HTG(moyenne) + " HTG", "")}
       ${tuile("Paiements aboutis", conversion === null ? "–" : conversion + " %",
-              conversion === null ? "" : fin.expired_count + " abandonné(s)")}
+              conversion === null ? "en ligne" : fin.expired_count + " abandonné(s) en ligne")}
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Répartition des recettes</h2>
+      <table>
+        <tr><th>Canal</th><th class="num">Ventes</th><th class="num">Recette</th></tr>
+        <tr><td>En ligne <span style="color:var(--ink-soft)">(Moncash / Natcash / Kashpaw)</span></td>
+          <td class="num">${fin.total_count}</td><td class="num"><strong>${HTG(fin.total_htg)} HTG</strong></td></tr>
+        <tr><td>Espèces <span style="color:var(--ink-soft)">(vouchers de lot utilisés)</span></td>
+          <td class="num">${cash.total_count}</td><td class="num"><strong>${HTG(cash.total_htg)} HTG</strong></td></tr>
+      </table>
+      <p class="sub" style="margin:12px 0 0">Un voucher imprimé compte comme vendu
+      dès qu'il a servi sur le routeur : imprimé mais jamais utilisé, il reste du stock.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Stock de vouchers
+        <span class="pill wait">${stockTotal} restant(s) · ${HTG(stockValeur)} HTG</span></h2>
+      <table>
+        <tr><th>Forfait</th><th>Routeur</th><th class="num">Restants</th><th class="num">Valeur</th></tr>
+        ${stock.map((s) => `<tr><td>${esc(s.label)}</td>
+          <td style="color:var(--ink-soft)">${esc(s.router_name)}</td>
+          <td class="num">${s.restants}</td>
+          <td class="num"><strong>${HTG(s.restants * s.price_htg)}</strong></td></tr>`).join("")
+          || `<tr><td colspan="4" style="color:var(--ink-soft)">Aucun voucher en stock.</td></tr>`}
+      </table>
     </div>
 
     <div class="card">
@@ -816,8 +896,9 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
     <div class="grid2">
       <div class="card">
         <h2 style="margin-top:0">Par forfait</h2>
-        <table><tr><th>Forfait</th><th>Routeur</th><th class="num">Ventes</th><th class="num">Recette</th></tr>
-        ${planRows || `<tr><td colspan="4" style="color:var(--ink-soft)">Aucune vente.</td></tr>`}</table>
+        <table><tr><th>Forfait</th><th>Routeur</th><th class="num">Ventes</th>
+          <th class="num">ligne / esp.</th><th class="num">Recette</th></tr>
+        ${planRows || `<tr><td colspan="5" style="color:var(--ink-soft)">Aucune vente.</td></tr>`}</table>
       </div>
       <div class="card">
         <h2 style="margin-top:0">Par moyen de paiement</h2>

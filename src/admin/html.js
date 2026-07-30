@@ -71,7 +71,29 @@ textarea{width:100%;min-height:220px;font-family:ui-monospace,Consolas,monospace
 .err-msg{color:var(--err);font-weight:700;font-size:14px}
 a{color:var(--accent)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-@media(max-width:700px){.grid2{grid-template-columns:1fr}}
+
+/* --- Mobile : le dashboard sert aussi depuis un téléphone --- */
+@media (max-width:760px){
+  .grid2{grid-template-columns:1fr}
+  header{flex-wrap:wrap;gap:10px;padding:12px 14px}
+  header nav{order:3;width:100%;overflow-x:auto}
+  header nav a{white-space:nowrap}
+  main{margin:16px auto;padding:0 12px}
+  h1{font-size:19px}
+  .card{padding:14px 14px}
+  /* Les tableaux larges défilent dans leur carte au lieu de déborder. */
+  .card table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .card table td,.card table th{white-space:nowrap}
+  /* Formulaires : un champ par ligne, boutons pleine largeur. */
+  form.inline{flex-direction:column;align-items:stretch}
+  form.inline label{width:100%}
+  form.inline input,form.inline select{width:100%}
+  form.inline button{width:100%}
+  textarea{min-height:160px;font-size:11px}
+  /* Confort tactile. */
+  button,.btn{padding:11px 18px}
+  button.danger{padding:9px 14px}
+}
 </style>
 </head>
 <body>

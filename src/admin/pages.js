@@ -180,6 +180,10 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
           }
         }
         :if ($action = "remove") do={
+          # Couper la session en cours AVANT de supprimer le compte : retirer
+          # l'utilisateur ne deconnecte pas quelqu'un deja connecte.
+          :do { /ip hotspot active remove [find user=$code]; } on-error={}
+          :do { /ip hotspot cookie remove [find user=$code]; } on-error={}
           :do { /ip hotspot user remove [find name=$code]; } on-error={}
         }
         :do {

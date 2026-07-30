@@ -259,14 +259,14 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
         <tr><th>Identité</th><th>Modèle</th><th>RouterOS</th><th>Uptime</th>
             <th>CPU</th><th>RAM libre</th><th>Connectés</th><th>Comptes hotspot</th></tr>
         <tr>
-          <td><strong>${esc(info.identity || "–")}</strong></td>
-          <td>${esc(info.board || "–")}</td>
-          <td class="mono">${esc(info.version || "–")}</td>
-          <td class="mono">${esc(info.uptime || "–")}</td>
-          <td>${info.cpuLoad}%</td>
-          <td>${mb(info.freeMem)} / ${mb(info.totalMem)}</td>
-          <td><span class="pill ok">${info.activeUsers} en ligne</span></td>
-          <td>${info.totalUsers}</td>
+          <td><strong id="iIdentity">${esc(info.identity || "–")}</strong></td>
+          <td id="iBoard">${esc(info.board || "–")}</td>
+          <td class="mono" id="iVersion">${esc(info.version || "–")}</td>
+          <td class="mono" id="iUptime">${esc(info.uptime || "–")}</td>
+          <td id="iCpu">${info.cpuLoad}%</td>
+          <td id="iMem">${mb(info.freeMem)} / ${mb(info.totalMem)}</td>
+          <td><span class="pill ok" id="iActive">${info.activeUsers} en ligne</span></td>
+          <td id="iUsers">${info.totalUsers}</td>
         </tr>
       </table>
     </div>` : `
@@ -274,7 +274,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
     l'instant. Importez le script agent ci-dessous, le premier rapport arrive en ≤ 15 s.</p></div>`;
 
   res.type("html").send(layout(router.name, `
-    <h1>${esc(router.name)} ${onlinePill(router.last_seen)}</h1>
+    <h1>${esc(router.name)} <span id="statePill">${onlinePill(router.last_seen)}</span></h1>
     <p class="sub">Slug : <span class="mono">${esc(router.slug)}</span>
       &middot; Portail : <span class="mono">${esc(router.portal_url || "non défini")}</span></p>
     ${infoCard}
@@ -401,13 +401,43 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
         });
       }, 1000);
 
-      // Resynchronisation avec les vraies valeurs du routeur.
-      setInterval(function () {
+      function mb(b) { return b > 0 ? Math.round(b / 1048576) + " Mo" : "–"; }
+      function setText(id, txt) {
+        var n = document.getElementById(id);
+        if (n) n.textContent = txt;
+      }
+
+      // Resynchronisation avec les vraies valeurs du routeur : sessions,
+      // ressources, et etat en ligne (l'agent rapporte toutes les 15 s).
+      function sync() {
         fetch("/admin/api/routers/" + ROUTER_ID + "/live", { headers: { "Accept": "application/json" } })
           .then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (d) { if (d && d.sessions) render(d.sessions); })
+          .then(function (d) {
+            if (!d) return;
+            if (d.sessions) render(d.sessions);
+            var i = d.info;
+            if (i) {
+              setText("iIdentity", i.identity || "–");
+              setText("iBoard", i.board || "–");
+              setText("iVersion", i.version || "–");
+              setText("iUptime", i.uptime || "–");
+              setText("iCpu", (i.cpuLoad || 0) + "%");
+              setText("iMem", mb(i.freeMem) + " / " + mb(i.totalMem));
+              setText("iActive", (i.activeUsers || 0) + " en ligne");
+              setText("iUsers", String(i.totalUsers || 0));
+            }
+            var pill = document.getElementById("statePill");
+            if (pill && d.lastSeen) {
+              var age = (Date.now() - new Date(d.lastSeen).getTime()) / 1000;
+              pill.innerHTML = age < 90
+                ? '<span class="pill ok">En ligne</span>'
+                : '<span class="pill off">Hors ligne (' + Math.round(age / 60) + ' min)</span>';
+            }
+          })
           .catch(function () { /* on retentera */ });
-      }, 20000);
+      }
+      setInterval(sync, 10000);
+      sync();
     })();
     </script>
 
@@ -634,9 +664,13 @@ adminRouter.get("/admin/routers/:id/agent.rsc", requireAdmin, async (req, res) =
 adminRouter.post("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const { code, label, price_htg, uptime } = req.body || {};
-  if (code && label && price_htg && uptime) {
+  // Le code sert d'identifiant d'API et de nom de profil RouterOS : on le
+  // normalise (pas d'espaces ni de caractères exotiques), sinon le forfait
+  // serait rejeté par le portail et le profil impossible à créer.
+  const cleanCode = String(code || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
+  if (cleanCode && label && price_htg && uptime) {
     await upsertPlan({
-      routerId: id, code: String(code).toLowerCase(), label: String(label),
+      routerId: id, code: cleanCode, label: String(label),
       priceHtg: Number(price_htg), uptime: String(uptime),
       sharedUsers: Number((req.body || {}).shared_users) || 1,
     });

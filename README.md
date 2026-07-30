@@ -43,14 +43,19 @@ CGNAT** (Starlink, 4G) : les routeurs se connectent en **sortant**, aucun port
 
 ## Brancher un routeur MikroTik
 
-1. Dashboard → **Routeurs → Ajouter** (nom, slug, URL du portail).
-2. Ouvrez la fiche du routeur : copiez le **script agent** généré, importez-le
-   sur le MikroTik (`/import mikrovoucher-agent.rsc`).
-   - Prérequis RouterOS v7 : `/system device-mode print` doit montrer
-     `hotspot=yes fetch=yes scheduler=yes` (sinon `/system device-mode update …`
-     puis **couper l'alimentation** pour confirmer).
-3. Le routeur passe « En ligne » dans le dashboard dès le premier appel (≤ 15 s).
-4. Créez les forfaits du routeur, puis générez un lot de vouchers pour tester.
+**Marche à suivre complète, du carton à la première vente :
+[`docs/AJOUTER-UN-ROUTEUR.md`](docs/AJOUTER-UN-ROUTEUR.md)** — avec les pièges
+qui coûtent des heures (device-mode, DNS, walled-garden en HTTPS) et un
+dépannage par symptôme.
+
+En résumé :
+
+1. `/system device-mode print` → `hotspot=yes fetch=yes scheduler=yes`
+   (sinon `update` puis **couper l'alimentation** pour confirmer).
+2. Dashboard → **Routeurs → Ajouter** (nom, slug, URL du portail).
+3. Copiez le **script agent** généré, importez-le sur le MikroTik.
+   Il passe « En ligne » en ≤ 15 s.
+4. Créez les forfaits, installez le portail, générez un lot de test.
 
 ## Portail captif (pages du hotspot)
 

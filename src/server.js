@@ -39,6 +39,25 @@ app.use(adminRouter);
 
 app.get("/", (_req, res) => res.redirect("/admin"));
 
+// Dernier rempart : on journalise et on répond, sans jamais tomber.
+app.use((err, req, res, _next) => {
+  console.error("[erreur]", req.method, req.originalUrl, err && err.message);
+  if (res.headersSent) return;
+  if (req.originalUrl.startsWith("/api") || req.originalUrl.startsWith("/agent")) {
+    return res.status(500).json({ error: "Erreur interne." });
+  }
+  res.status(500).type("html").send(
+    '<meta charset="utf-8"><p style="font-family:system-ui;padding:30px">' +
+    "Une erreur est survenue. Réessayez, ou revenez au " +
+    '<a href="/admin">tableau de bord</a>.</p>');
+});
+
+// Un incident isolé ne doit pas emporter le service (les clients paient).
+process.on("unhandledRejection", (reason) =>
+  console.error("[unhandledRejection]", reason && reason.message ? reason.message : reason));
+process.on("uncaughtException", (err) =>
+  console.error("[uncaughtException]", err && err.message ? err.message : err));
+
 async function main() {
   await initDb();
   setInterval(reconcile, config.reconcileIntervalMs);

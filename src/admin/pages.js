@@ -15,6 +15,19 @@ import { requireAdmin, loginPage, handleLogin, handleLogout } from "./auth.js";
 
 export const adminRouter = Router();
 
+// Express 4 ne rattrape pas le rejet d'un handler async : une erreur SQL
+// isolée suffirait à tuer le process (et donc tout le service). On enveloppe
+// chaque handler pour renvoyer l'erreur au middleware d'erreur d'Express.
+["get", "post"].forEach(function (method) {
+  const original = adminRouter[method].bind(adminRouter);
+  adminRouter[method] = function (path, ...handlers) {
+    return original(path, ...handlers.map((h) =>
+      typeof h === "function" && h.length < 4
+        ? function (req, res, next) { Promise.resolve(h(req, res, next)).catch(next); }
+        : h));
+  };
+});
+
 adminRouter.get("/admin/login", (req, res) => loginPage(res));
 adminRouter.post("/admin/login", handleLogin);
 adminRouter.post("/admin/logout", handleLogout);

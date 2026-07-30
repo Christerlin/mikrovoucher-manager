@@ -15,6 +15,18 @@ import {
 
 export const agentRouter = Router();
 
+// Filet de sécurité : un handler async qui rejette ne doit jamais tuer le
+// process (Express 4 ne les rattrape pas de lui-même).
+["get", "post"].forEach(function (method) {
+  const original = agentRouter[method].bind(agentRouter);
+  agentRouter[method] = function (path, ...handlers) {
+    return original(path, ...handlers.map((h) =>
+      typeof h === "function" && h.length < 4
+        ? function (req, res, next) { Promise.resolve(h(req, res, next)).catch(next); }
+        : h));
+  };
+});
+
 // Corps de requête en texte. Si un parseur amont l'a transformé en objet
 // (Content-Type inattendu de /tool fetch), on retombe sur sa seule clé.
 function rawBody(req) {

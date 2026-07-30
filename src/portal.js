@@ -16,6 +16,18 @@ import { processOrder } from "./deliver.js";
 
 export const portalRouter = Router();
 
+// Filet de sécurité : un handler async qui rejette ne doit jamais tuer le
+// process (Express 4 ne les rattrape pas de lui-même).
+["get", "post"].forEach(function (method) {
+  const original = portalRouter[method].bind(portalRouter);
+  portalRouter[method] = function (path, ...handlers) {
+    return original(path, ...handlers.map((h) =>
+      typeof h === "function" && h.length < 4
+        ? function (req, res, next) { Promise.resolve(h(req, res, next)).catch(next); }
+        : h));
+  };
+});
+
 const METHODS = new Set(["moncash", "natcash", "kashpaw", "all"]);
 
 // --- Limiteur de débit en mémoire (par IP) -----------------------------------

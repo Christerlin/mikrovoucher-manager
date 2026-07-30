@@ -57,6 +57,16 @@ function durationToSeconds(str) {
   return total;
 }
 
+// RouterOS stocke le débit en "montant/descendant" (rx/tx du point de vue du
+// client). Affiché tel quel, on le lit à l'envers : on explicite le sens.
+function formatRate(raw) {
+  if (!raw) return "illimité";
+  const [up, down] = String(raw).split("/");
+  if (!down) return raw;
+  const clean = (v) => String(v).replace(/M$/i, "");
+  return `\u2193 ${clean(down)} \u00b7 \u2191 ${clean(up)} Mb/s`;
+}
+
 function onlinePill(lastSeen) {
   if (!lastSeen) return `<span class="pill off">Jamais vu</span>`;
   const ageS = (Date.now() - new Date(lastSeen).getTime()) / 1000;
@@ -412,7 +422,7 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
       <td>${p.price_htg} HTG</td>
       <td class="mono">${esc(p.uptime)}</td>
       <td>${p.shared_users}</td>
-      <td class="mono">${p.rate_limit ? esc(p.rate_limit) : "illimité"}</td>
+      <td class="mono">${esc(formatRate(p.rate_limit))}</td>
       <td><form method="post" action="/admin/routers/${router.id}/plans/delete" style="margin:0"
                 data-confirm="Retirer le forfait ${esc(p.label)} ?">
         <input type="hidden" name="code" value="${esc(p.code)}">
@@ -464,8 +474,8 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
         <label>Prix HTG <input name="price_htg" type="number" min="20" size="6" required></label>
         <label>Durée RouterOS <input name="uptime" placeholder="3d" size="6" required></label>
         <label>Appareils <input name="shared_users" type="number" min="1" max="50" value="1" size="4" required></label>
-        <label>Descendant Mb/s <input name="down_mbps" type="number" min="0" step="0.5" placeholder="0 = illimité" size="5"></label>
-        <label>Montant Mb/s <input name="up_mbps" type="number" min="0" step="0.5" placeholder="0 = illimité" size="5"></label>
+        <label>Débit ↓ Mb/s <input name="down_mbps" type="number" min="0" step="0.5" placeholder="0 = illimité" size="5"></label>
+        <label>Débit ↑ Mb/s <input name="up_mbps" type="number" min="0" step="0.5" placeholder="0 = illimité" size="5"></label>
         <button type="submit">Enregistrer</button>
       </form>
       <p class="sub" style="margin:12px 0 0">Un code existant est mis à jour.

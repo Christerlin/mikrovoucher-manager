@@ -77,10 +77,13 @@ export async function initDb() {
       price_htg   INT NOT NULL,
       uptime      TEXT NOT NULL,
       shared_users INT NOT NULL DEFAULT 1,
+      rate_limit  TEXT NOT NULL DEFAULT '',
       active      BOOLEAN NOT NULL DEFAULT true,
       UNIQUE (router_id, code)
     );
     ALTER TABLE plans ADD COLUMN IF NOT EXISTS shared_users INT NOT NULL DEFAULT 1;
+    -- Débit RouterOS "montant/descendant" (ex : 1M/5M). Vide = illimité.
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS rate_limit TEXT NOT NULL DEFAULT '';
 
     -- File de commandes que chaque routeur vient tirer (modèle pull/CGNAT).
     CREATE TABLE IF NOT EXISTS commands (
@@ -240,13 +243,14 @@ export async function getPlanById(id) {
   const { rows } = await pool.query(`SELECT * FROM plans WHERE id = $1`, [id]);
   return rows[0] || null;
 }
-export async function upsertPlan({ routerId, code, label, priceHtg, uptime, sharedUsers }) {
+export async function upsertPlan({ routerId, code, label, priceHtg, uptime, sharedUsers, rateLimit }) {
   await pool.query(
-    `INSERT INTO plans (router_id, code, label, price_htg, uptime, shared_users)
-     VALUES ($1,$2,$3,$4,$5,$6)
+    `INSERT INTO plans (router_id, code, label, price_htg, uptime, shared_users, rate_limit)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT (router_id, code)
-     DO UPDATE SET label=$3, price_htg=$4, uptime=$5, shared_users=$6, active=true`,
-    [routerId, code, label, priceHtg, uptime, sharedUsers || 1]);
+     DO UPDATE SET label=$3, price_htg=$4, uptime=$5, shared_users=$6,
+                   rate_limit=$7, active=true`,
+    [routerId, code, label, priceHtg, uptime, sharedUsers || 1, rateLimit || ""]);
 }
 export async function deactivatePlan(routerId, code) {
   await pool.query(
@@ -277,7 +281,7 @@ export async function removePlan(routerId, code) {
 
 // --------------------------------------------------- vouchers + commandes --
 // Crée un voucher et sa commande de création routeur, atomiquement.
-export async function createVoucher({ routerId, code, planId, uptime, source, comment, profile, sharedUsers }) {
+export async function createVoucher({ routerId, code, planId, uptime, source, comment, profile, sharedUsers, rateLimit }) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -287,6 +291,7 @@ export async function createVoucher({ routerId, code, planId, uptime, source, co
       [routerId, {
         code, uptime, comment: comment || "",
         profile: profile || "", shared: sharedUsers || 1,
+        rate: rateLimit || "",
       }]);
     const v = await client.query(
       `INSERT INTO vouchers (router_id, code, plan_id, source, command_id)

@@ -27,6 +27,7 @@ async function ensureVoucher(order) {
         source: "order",
         profile: `mv-${plan.code}`,
         sharedUsers: plan.shared_users,
+        rateLimit: plan.rate_limit,
         comment: `paym ${order.reference}`,
       });
       await attachVoucherToOrder(order.reference, v.id);

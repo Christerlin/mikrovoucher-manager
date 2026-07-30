@@ -157,14 +157,19 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
         :set rest [:pick $rest ($p5 + 1) [:len $rest]];
         :local p6 [:find $rest "|"];
         :local shr [:pick $rest 0 $p6];
-        :local cmt [:pick $rest ($p6 + 1) [:len $rest]];
+        :set rest [:pick $rest ($p6 + 1) [:len $rest]];
+        :local p7 [:find $rest "|"];
+        :local rate [:pick $rest 0 $p7];
+        :local cmt [:pick $rest ($p7 + 1) [:len $rest]];
         :if ($action = "add") do={
           # Profil par forfait : porte le nombre d'appareils simultanes.
           :if ([:len $prof] > 0) do={
             :if ([:len [/ip hotspot user profile find name=$prof]] = 0) do={
-              :do { /ip hotspot user profile add name=$prof shared-users=$shr; } on-error={}
+              :do { /ip hotspot user profile add name=$prof shared-users=$shr \\
+                rate-limit=$rate; } on-error={}
             } else={
-              :do { /ip hotspot user profile set [find name=$prof] shared-users=$shr; } on-error={}
+              :do { /ip hotspot user profile set [find name=$prof] shared-users=$shr \\
+                rate-limit=$rate; } on-error={}
             }
           }
           :if ([:len [/ip hotspot user find name=$code]] = 0) do={
@@ -407,6 +412,7 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
       <td>${p.price_htg} HTG</td>
       <td class="mono">${esc(p.uptime)}</td>
       <td>${p.shared_users}</td>
+      <td class="mono">${p.rate_limit ? esc(p.rate_limit) : "illimité"}</td>
       <td><form method="post" action="/admin/routers/${router.id}/plans/delete" style="margin:0"
                 data-confirm="Retirer le forfait ${esc(p.label)} ?">
         <input type="hidden" name="code" value="${esc(p.code)}">
@@ -444,8 +450,8 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
 
     <div class="card">
       <table>
-        <tr><th>Code</th><th>Nom</th><th>Prix</th><th>Durée</th><th>Appareils</th><th></th></tr>
-        ${rows || `<tr><td colspan="6" style="color:var(--ink-soft)">Aucun forfait actif.</td></tr>`}
+        <tr><th>Code</th><th>Nom</th><th>Prix</th><th>Durée</th><th>Appareils</th><th>Débit</th><th></th></tr>
+        ${rows || `<tr><td colspan="7" style="color:var(--ink-soft)">Aucun forfait actif.</td></tr>`}
       </table>
     </div>
     ${retiredCard}
@@ -458,10 +464,13 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
         <label>Prix HTG <input name="price_htg" type="number" min="20" size="6" required></label>
         <label>Durée RouterOS <input name="uptime" placeholder="3d" size="6" required></label>
         <label>Appareils <input name="shared_users" type="number" min="1" max="50" value="1" size="4" required></label>
+        <label>Descendant Mb/s <input name="down_mbps" type="number" min="0" step="0.5" placeholder="0 = illimité" size="5"></label>
+        <label>Montant Mb/s <input name="up_mbps" type="number" min="0" step="0.5" placeholder="0 = illimité" size="5"></label>
         <button type="submit">Enregistrer</button>
       </form>
       <p class="sub" style="margin:12px 0 0">Un code existant est mis à jour.
-      « Appareils » = nombre d'appareils pouvant utiliser le même voucher en même temps.</p>
+      « Appareils » = nombre d'appareils pouvant utiliser le même voucher en même temps.
+      Le débit limite chaque client de ce forfait ; laissez vide ou 0 pour ne pas limiter.</p>
     </div>`, { active: "routers" }));
 });
 
@@ -596,6 +605,13 @@ adminRouter.post("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
       routerId: id, code: cleanCode, label: String(label),
       priceHtg: Number(price_htg), uptime: String(uptime),
       sharedUsers: Number((req.body || {}).shared_users) || 1,
+      // RouterOS attend "montant/descendant" (ex : 1M/5M). Vide = illimité.
+      rateLimit: (function () {
+        const up = Number((req.body || {}).up_mbps) || 0;
+        const down = Number((req.body || {}).down_mbps) || 0;
+        if (up <= 0 && down <= 0) return "";
+        return `${up > 0 ? up : down}M/${down > 0 ? down : up}M`;
+      })(),
     });
   }
   res.redirect(`/admin/routers/${id}/plans`);
@@ -627,6 +643,7 @@ adminRouter.post("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =
           routerId: id, code: generateVoucherCode(8), planId: plan.id,
           uptime: plan.uptime, source: "batch",
           profile: `mv-${plan.code}`, sharedUsers: plan.shared_users,
+          rateLimit: plan.rate_limit,
           comment: `lot ${new Date().toISOString().slice(0, 10)}`,
         });
         ids.push(v.id);

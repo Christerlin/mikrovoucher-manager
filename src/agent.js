@@ -61,10 +61,10 @@ agentRouter.get("/agent/next", async (req, res) => {
     if (!cmd) return res.send("");
     const p = cmd.payload || {};
     // Le séparateur | n'apparaît jamais dans nos codes (alphabet contrôlé).
-    // Format : id|action|code|uptime|profil|sharedUsers|commentaire
+    // Format : id|action|code|uptime|profil|sharedUsers|debit|commentaire
     res.send([
       cmd.id, cmd.action, p.code || "", p.uptime || "",
-      p.profile || "", p.shared || 1, p.comment || "",
+      p.profile || "", p.shared || 1, p.rate || "", p.comment || "",
     ].join("|"));
   } catch (err) {
     console.error("[agent/next]", err.message);

@@ -78,8 +78,10 @@ a{color:var(--accent)}
 .kpi-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;
   color:var(--ink-soft);font-weight:700}
 /* Chiffre vedette : même sans que le reste, chiffres proportionnels. */
-.kpi-value{font-size:24px;font-weight:700;margin:6px 0 2px;line-height:1.1;
-  font-variant-numeric:proportional-nums}
+.kpi-value{font-size:20px;font-weight:700;margin:6px 0 2px;line-height:1.15;
+  font-variant-numeric:proportional-nums;overflow-wrap:anywhere}
+.kpi-unit{font-size:12px;font-weight:700;color:var(--ink-soft);margin-left:4px;
+  white-space:nowrap}
 .kpi-detail{font-size:12px;color:var(--ink-soft)}
 
 .chart{margin-top:14px}
@@ -120,7 +122,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   h1{font-size:19px}
   .card{padding:14px 14px}
   .kpis{grid-template-columns:repeat(2,1fr);gap:10px}
-  .kpi-value{font-size:20px}
+  .kpi-value{font-size:18px}
   .plot{height:140px}
   /* Les tableaux larges défilent dans leur carte au lieu de déborder. */
   .card table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}

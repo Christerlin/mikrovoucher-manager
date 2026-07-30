@@ -794,10 +794,12 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
   const engages = fin.total_count + fin.expired_count;
   const conversion = engages > 0 ? Math.round((fin.total_count / engages) * 100) : null;
 
-  const tuile = (label, valeur, detail) => `
+  // L'unité est un élément à part : sur un gros montant elle passe à la ligne
+  // au lieu de pousser le chiffre hors de la tuile.
+  const tuile = (label, valeur, detail, unite) => `
     <div class="kpi">
       <div class="kpi-label">${label}</div>
-      <div class="kpi-value">${valeur}</div>
+      <div class="kpi-value">${valeur}${unite ? `<span class="kpi-unit">${unite}</span>` : ""}</div>
       <div class="kpi-detail">${detail || "&nbsp;"}</div>
     </div>`;
 
@@ -839,12 +841,12 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
          href="/admin/export.csv">Exporter en CSV</a></p>
 
     <div class="kpis">
-      ${tuile("Aujourd'hui", HTG(fin.today_htg + cash.today_htg) + " HTG",
-              (fin.today_count + cash.today_count) + " vente(s)")}
-      ${tuile("7 derniers jours", HTG(fin.week_htg + cash.week_htg) + " HTG", "")}
-      ${tuile("Ce mois", HTG(fin.month_htg + cash.month_htg) + " HTG", "")}
-      ${tuile("Total encaissé", HTG(totalHtg) + " HTG", totalCount + " vente(s)")}
-      ${tuile("Panier moyen", HTG(moyenne) + " HTG", "")}
+      ${tuile("Aujourd'hui", HTG(fin.today_htg + cash.today_htg),
+              (fin.today_count + cash.today_count) + " vente(s)", "HTG")}
+      ${tuile("7 derniers jours", HTG(fin.week_htg + cash.week_htg), "", "HTG")}
+      ${tuile("Ce mois", HTG(fin.month_htg + cash.month_htg), "", "HTG")}
+      ${tuile("Total encaissé", HTG(totalHtg), totalCount + " vente(s)", "HTG")}
+      ${tuile("Panier moyen", HTG(moyenne), "", "HTG")}
       ${tuile("Paiements aboutis", conversion === null ? "–" : conversion + " %",
               conversion === null ? "en ligne" : fin.expired_count + " abandonné(s) en ligne")}
     </div>

@@ -10,7 +10,7 @@ import {
   listOrders, salesSummary, financeSummary, cashSummary, stockByPlan,
   salesByDay, salesByPlan, salesByMethod, allSales,
 } from "../db.js";
-import { generateRouterToken, generateVoucherCode } from "../codes.js";
+import { generateRouterToken, generateVoucherCode, durationToSeconds } from "../codes.js";
 import { layout, esc } from "./html.js";
 import { requireAdmin, loginPage, handleLogin, handleLogout } from "./auth.js";
 
@@ -39,23 +39,6 @@ function publicBase(req) {
   if (config.publicUrl) return config.publicUrl;
   const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
   return `${proto}://${req.headers.host}`;
-}
-
-// Durée RouterOS ("2d21h45m30s", "23:59:00") -> secondes, pour que le compte à
-// rebours démarre dès le rendu serveur et pas seulement à la 1re resync.
-function durationToSeconds(str) {
-  str = String(str || "").trim();
-  if (!str) return 0;
-  const units = { w: 604800, d: 86400, h: 3600, m: 60, s: 1 };
-  let total = 0, m;
-  const re = /(\d+)([wdhms])/g;
-  while ((m = re.exec(str)) !== null) total += parseInt(m[1], 10) * units[m[2]];
-  if (total === 0) {
-    const p = str.split(":").map(Number);
-    if (p.length === 3 && p.every((n) => !isNaN(n))) total = p[0] * 3600 + p[1] * 60 + p[2];
-    else if (p.length === 2 && p.every((n) => !isNaN(n))) total = p[0] * 60 + p[1];
-  }
-  return total;
 }
 
 // RouterOS stocke le débit en "montant/descendant" (rx/tx du point de vue du
@@ -515,6 +498,17 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
   const filter = String(req.query.q || "").toUpperCase();
   const shown = filter ? vouchers.filter((v) => v.code.includes(filter)) : vouchers;
 
+  // Temps restant avant échéance, compté depuis la première utilisation.
+  const restant = (v) => {
+    if (!v.used_at || !v.validity_seconds) return "–";
+    if (v.expired_at) return "terminé";
+    const fin = new Date(v.used_at).getTime() + v.validity_seconds * 1000;
+    const s = Math.round((fin - Date.now()) / 1000);
+    if (s <= 0) return "échu";
+    const j = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
+    return j > 0 ? `${j} j ${h} h` : `${h} h`;
+  };
+
   const rows = shown.map((v) => `
     <tr>
       <td class="mono"><strong>${esc(v.code)}</strong></td>
@@ -527,10 +521,12 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
         </form>
       </td>
       <td>${v.source === "order" ? "vente en ligne" : "lot"}</td>
-      <td>${online.has(v.code) ? `<span class="pill ok">connecté</span>`
-        : v.used_at ? `<span class="pill" style="background:rgba(36,27,19,.08);color:var(--ink-soft)">utilisé</span>`
+      <td>${v.expired_at ? `<span class="pill off">expiré</span>`
+        : online.has(v.code) ? `<span class="pill ok">connecté</span>`
+        : v.used_at ? `<span class="pill" style="background:color-mix(in srgb,var(--ink-soft) 14%,transparent);color:var(--ink-soft)">utilisé</span>`
         : v.status === "ON_ROUTER" ? `<span class="pill wait">à vendre</span>`
         : `<span class="pill wait">en file</span>`}</td>
+      <td style="color:var(--ink-soft);font-size:12px">${restant(v)}</td>
       <td style="color:var(--ink-soft);font-size:12px">${new Date(v.created_at).toLocaleString("fr-FR")}</td>
       <td style="display:flex;gap:6px">
         <a class="btn ghost" href="/admin/print?ids=${v.id}">Imprimer</a>
@@ -572,8 +568,9 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
         </form>
       </div>
       <table style="margin-top:12px">
-        <tr><th>Code</th><th>Forfait</th><th>Origine</th><th>État</th><th>Créé</th><th></th></tr>
-        ${rows || `<tr><td colspan="6" style="color:var(--ink-soft)">Aucun voucher.</td></tr>`}
+        <tr><th>Code</th><th>Forfait</th><th>Origine</th><th>État</th><th>Expire dans</th>
+            <th>Créé</th><th></th></tr>
+        ${rows || `<tr><td colspan="7" style="color:var(--ink-soft)">Aucun voucher.</td></tr>`}
       </table>
     </div>`, { active: "routers" }));
 });
@@ -637,6 +634,9 @@ adminRouter.post("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
       priceHtg: Number(price_htg), uptime: String(uptime),
       sharedUsers: Number((req.body || {}).shared_users) || 1,
       // RouterOS attend "montant/descendant" (ex : 1M/5M). Vide = illimité.
+      // La durée saisie sert aussi de validité calendaire : un forfait
+      // "3 jours" expire 3 jours après la première connexion du client.
+      validitySeconds: durationToSeconds(String(uptime)),
       rateLimit: (function () {
         const up = Number((req.body || {}).up_mbps) || 0;
         const down = Number((req.body || {}).down_mbps) || 0;

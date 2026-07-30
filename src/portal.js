@@ -7,6 +7,7 @@ import { config } from "./config.js";
 import {
   getRouterBySlug, getPlan, createOrder, getOrder, getOrderByPin,
   getOrderByHandoff, setHandoff, getPendingOrders, expireOrder,
+  expireUsedVouchers,
 } from "./db.js";
 import { paymentsEnabled, createPayment, verifyPayment } from "./paym.js";
 import {
@@ -214,6 +215,14 @@ portalRouter.get("/return", rateLimit(30), async (req, res) => {
 
 // --- Cron de réconciliation (clients jamais revenus) -------------------------
 export async function reconcile() {
+  // Vouchers dont la validité calendaire est écoulée : on les retire du routeur.
+  try {
+    const n = await expireUsedVouchers();
+    if (n > 0) console.log(`[expiry] ${n} voucher(s) arrivé(s) à échéance`);
+  } catch (err) {
+    console.error("[expiry]", err.message);
+  }
+
   let pending;
   try { pending = await getPendingOrders(); }
   catch (err) { return console.error("[reconcile] lecture:", err.message); }

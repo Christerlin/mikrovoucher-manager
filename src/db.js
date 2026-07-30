@@ -78,12 +78,17 @@ export async function initDb() {
       uptime      TEXT NOT NULL,
       shared_users INT NOT NULL DEFAULT 1,
       rate_limit  TEXT NOT NULL DEFAULT '',
+      -- Validité en secondes à partir de la PREMIÈRE connexion. C'est elle qui
+      -- fait foi : limit-uptime seul ne compte que le temps réellement connecté,
+      -- donc un forfait "30 jours" pouvait durer des mois.
+      validity_seconds INT NOT NULL DEFAULT 0,
       active      BOOLEAN NOT NULL DEFAULT true,
       UNIQUE (router_id, code)
     );
     ALTER TABLE plans ADD COLUMN IF NOT EXISTS shared_users INT NOT NULL DEFAULT 1;
     -- Débit RouterOS "montant/descendant" (ex : 1M/5M). Vide = illimité.
     ALTER TABLE plans ADD COLUMN IF NOT EXISTS rate_limit TEXT NOT NULL DEFAULT '';
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS validity_seconds INT NOT NULL DEFAULT 0;
 
     -- File de commandes que chaque routeur vient tirer (modèle pull/CGNAT).
     CREATE TABLE IF NOT EXISTS commands (
@@ -117,6 +122,7 @@ export async function initDb() {
     ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ;
     ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_uptime TEXT;
     ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_bytes BIGINT DEFAULT 0;
+    ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ;
 
     CREATE TABLE IF NOT EXISTS orders (
       reference           TEXT PRIMARY KEY,
@@ -251,14 +257,46 @@ export async function getPlanById(id) {
   const { rows } = await pool.query(`SELECT * FROM plans WHERE id = $1`, [id]);
   return rows[0] || null;
 }
-export async function upsertPlan({ routerId, code, label, priceHtg, uptime, sharedUsers, rateLimit }) {
+export async function upsertPlan({ routerId, code, label, priceHtg, uptime, sharedUsers, rateLimit, validitySeconds }) {
   await pool.query(
-    `INSERT INTO plans (router_id, code, label, price_htg, uptime, shared_users, rate_limit)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `INSERT INTO plans (router_id, code, label, price_htg, uptime, shared_users,
+                        rate_limit, validity_seconds)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (router_id, code)
      DO UPDATE SET label=$3, price_htg=$4, uptime=$5, shared_users=$6,
-                   rate_limit=$7, active=true`,
-    [routerId, code, label, priceHtg, uptime, sharedUsers || 1, rateLimit || ""]);
+                   rate_limit=$7, validity_seconds=$8, active=true`,
+    [routerId, code, label, priceHtg, uptime, sharedUsers || 1, rateLimit || "",
+     validitySeconds || 0]);
+}
+
+// Retire du routeur les vouchers dont la validité est écoulée depuis leur
+// première utilisation. Une seule transaction : on met la commande en file ET
+// on marque le voucher, pour ne jamais la reprogrammer deux fois.
+export async function expireUsedVouchers() {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`
+      SELECT v.id, v.code, v.router_id
+        FROM vouchers v JOIN plans p ON p.id = v.plan_id
+       WHERE v.used_at IS NOT NULL AND v.expired_at IS NULL
+         AND p.validity_seconds > 0
+         AND v.used_at + (p.validity_seconds || ' seconds')::interval < now()
+       FOR UPDATE OF v SKIP LOCKED`);
+    for (const v of rows) {
+      await client.query(
+        `INSERT INTO commands (router_id, action, payload) VALUES ($1,'remove',$2)`,
+        [v.router_id, { code: v.code }]);
+      await client.query(`UPDATE vouchers SET expired_at = now() WHERE id = $1`, [v.id]);
+    }
+    await client.query("COMMIT");
+    return rows.length;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 export async function deactivatePlan(routerId, code) {
   await pool.query(
@@ -316,7 +354,7 @@ export async function createVoucher({ routerId, code, planId, uptime, source, co
 }
 export async function listVouchers(routerId, limit = 100) {
   const { rows } = await pool.query(
-    `SELECT v.*, p.label AS plan_label, p.price_htg
+    `SELECT v.*, p.label AS plan_label, p.price_htg, p.validity_seconds
        FROM vouchers v LEFT JOIN plans p ON p.id = v.plan_id
       WHERE v.router_id = $1
       ORDER BY (v.used_at IS NOT NULL), v.id DESC LIMIT $2`,

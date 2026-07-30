@@ -17,9 +17,15 @@ export const config = {
   // Accepte aussi un simple hôte : Render fournit "app.onrender.com" via
   // fromService/host, on complète alors le schéma.
   publicUrl: (function () {
-    var u = (process.env.PUBLIC_URL || "").trim().replace(/\/$/, "");
-    if (!u) return "";
-    return /^https?:\/\//.test(u) ? u : "https://" + u;
+    var raw = (process.env.PUBLIC_URL || "").trim().replace(/\/$/, "");
+    // Render expose l'URL publique du service ; on s'en sert par défaut.
+    var external = (process.env.RENDER_EXTERNAL_URL || "").trim().replace(/\/$/, "");
+    var host = raw.replace(/^https?:\/\//, "");
+    // Un hôte sans point n'est pas joignable depuis Internet : c'est le nom
+    // interne du service (ce que renvoie fromService/host). Les scripts routeur
+    // générés à partir de là ne joindraient jamais le manager, donc on l'écarte.
+    if (!host || host.indexOf(".") === -1) return external;
+    return /^https?:\/\//.test(raw) ? raw : "https://" + raw;
   })(),
 
   // Pay'm (agrégateur Moncash / Natcash / Kashpaw). Optionnel : sans

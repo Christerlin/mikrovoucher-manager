@@ -16,13 +16,9 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         generateValue: true
-      # Render remplit l'URL publique du service : les scripts routeur générés
-      # pointent ainsi tout de suite au bon endroit.
-      - key: PUBLIC_URL
-        fromService:
-          type: web
-          name: mikrovoucher-manager
-          property: host
+      # PUBLIC_URL n'est pas listé : Render fournit RENDER_EXTERNAL_URL, que
+      # l'application utilise automatiquement. (Ne pas utiliser fromService/host
+      # ici : il renvoie le nom interne du service, injoignable depuis Internet.)
       # À renseigner au déploiement (laisser vide pour démarrer sans paiement).
       - key: PAYM_CLIENT_ID
         sync: false

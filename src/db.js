@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import { config } from "./config.js";
+import { durationToSeconds } from "./codes.js";
 
 function buildDbSsl() {
   const ca = process.env.DATABASE_CA_CERT;
@@ -145,6 +146,36 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS orders_handoff_idx
       ON orders (handoff_hash) WHERE handoff_hash IS NOT NULL;
   `);
+}
+
+// Les forfaits créés avant l'expiration calendaire ont validity_seconds = 0
+// et n'expireraient jamais. On la déduit une fois de leur durée.
+export async function backfillPlanValidity() {
+  const { rows } = await pool.query(
+    `SELECT id, uptime FROM plans WHERE validity_seconds = 0`);
+  let n = 0;
+  for (const p of rows) {
+    const secondes = durationToSeconds(p.uptime);
+    if (secondes > 0) {
+      await pool.query(`UPDATE plans SET validity_seconds = $2 WHERE id = $1`,
+        [p.id, secondes]);
+      n += 1;
+    }
+  }
+  return n;
+}
+
+// Vouchers déjà utilisés depuis plus longtemps que leur forfait ne le permet :
+// activer l'expiration les retirerait immédiatement. À signaler avant, pour ne
+// pas couper des clients sans le savoir.
+export async function vouchersDejaEchus() {
+  const { rows } = await pool.query(`
+    SELECT count(*)::int AS n
+      FROM vouchers v JOIN plans p ON p.id = v.plan_id
+     WHERE v.used_at IS NOT NULL AND v.expired_at IS NULL
+       AND p.validity_seconds > 0
+       AND v.used_at + (p.validity_seconds || ' seconds')::interval < now()`);
+  return rows[0].n;
 }
 
 // ---------------------------------------------------------------- routers --

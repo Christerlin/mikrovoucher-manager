@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { config } from "./config.js";
-import { initDb } from "./db.js";
+import { initDb, backfillPlanValidity, vouchersDejaEchus } from "./db.js";
 import { portalRouter, reconcile } from "./portal.js";
 import { agentRouter } from "./agent.js";
 import { adminRouter } from "./admin/pages.js";
@@ -61,6 +61,15 @@ process.on("uncaughtException", (err) =>
 
 async function main() {
   await initDb();
+  const majores = await backfillPlanValidity();
+  if (majores > 0) {
+    const echus = await vouchersDejaEchus();
+    console.log(`[migration] validité calendaire déduite pour ${majores} forfait(s)`);
+    if (echus > 0) {
+      console.log(`[migration] ${echus} voucher(s) déjà au-delà de leur validité ` +
+        `seront retirés au prochain cycle`);
+    }
+  }
   setInterval(reconcile, config.reconcileIntervalMs);
   app.listen(config.port, () =>
     console.log(`Mikrovoucher Manager sur le port ${config.port}`));

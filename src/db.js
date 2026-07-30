@@ -428,6 +428,76 @@ export async function listOrders(limit = 200) {
       ORDER BY o.created_at DESC LIMIT $1`, [limit]);
   return rows;
 }
+// --- Finances ---------------------------------------------------------------
+// Toutes les agrégations par jour se font dans le fuseau du commerce, sinon
+// "aujourd'hui" bascule 5 h trop tôt (la base stocke en UTC).
+const TZ = process.env.BUSINESS_TZ || "America/Port-au-Prince";
+const PAID = "status IN ('PAID','DELIVERED')";
+
+export async function financeSummary() {
+  const { rows } = await pool.query(`
+    WITH j AS (SELECT (now() AT TIME ZONE $1)::date AS today)
+    SELECT
+      COALESCE(SUM(amount_htg) FILTER (WHERE ${PAID}),0)::int AS total_htg,
+      COUNT(*) FILTER (WHERE ${PAID})::int AS total_count,
+      COALESCE(SUM(amount_htg) FILTER (WHERE ${PAID}
+        AND (created_at AT TIME ZONE $1)::date = j.today),0)::int AS today_htg,
+      COUNT(*) FILTER (WHERE ${PAID}
+        AND (created_at AT TIME ZONE $1)::date = j.today)::int AS today_count,
+      COALESCE(SUM(amount_htg) FILTER (WHERE ${PAID}
+        AND (created_at AT TIME ZONE $1)::date > j.today - 7),0)::int AS week_htg,
+      COALESCE(SUM(amount_htg) FILTER (WHERE ${PAID}
+        AND date_trunc('month', created_at AT TIME ZONE $1)
+            = date_trunc('month', j.today)),0)::int AS month_htg,
+      COUNT(*) FILTER (WHERE status = 'PENDING')::int AS pending_count,
+      COUNT(*) FILTER (WHERE status = 'EXPIRED')::int AS expired_count
+    FROM orders, j`, [TZ]);
+  return rows[0];
+}
+
+// Recette par jour sur une fenêtre glissante, jours vides inclus (sinon le
+// graphique ment en resserrant les jours sans vente).
+export async function salesByDay(days = 30) {
+  const { rows } = await pool.query(`
+    WITH bornes AS (
+      SELECT generate_series(
+        (now() AT TIME ZONE $1)::date - ($2::int - 1),
+        (now() AT TIME ZONE $1)::date,
+        '1 day')::date AS jour
+    )
+    SELECT b.jour,
+           COALESCE(SUM(o.amount_htg),0)::int AS htg,
+           COUNT(o.*)::int AS ventes
+      FROM bornes b
+      LEFT JOIN orders o
+        ON (o.created_at AT TIME ZONE $1)::date = b.jour AND ${PAID}
+     GROUP BY b.jour ORDER BY b.jour`, [TZ, days]);
+  return rows;
+}
+
+export async function salesByPlan() {
+  const { rows } = await pool.query(`
+    SELECT p.label, r.name AS router_name,
+           COUNT(*)::int AS ventes,
+           COALESCE(SUM(o.amount_htg),0)::int AS htg
+      FROM orders o
+      JOIN plans p ON p.id = o.plan_id
+      JOIN routers r ON r.id = o.router_id
+     WHERE ${PAID}
+     GROUP BY p.label, r.name
+     ORDER BY htg DESC`);
+  return rows;
+}
+
+export async function salesByMethod() {
+  const { rows } = await pool.query(`
+    SELECT method, COUNT(*)::int AS ventes,
+           COALESCE(SUM(amount_htg),0)::int AS htg
+      FROM orders WHERE ${PAID}
+     GROUP BY method ORDER BY htg DESC`);
+  return rows;
+}
+
 export async function salesSummary() {
   const { rows } = await pool.query(
     `SELECT r.name AS router_name,

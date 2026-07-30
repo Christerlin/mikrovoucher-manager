@@ -7,7 +7,7 @@ import {
   listPlans, upsertPlan, removePlan, activatePlan, getPlan,
   createVoucher, listVouchers, getVouchersByIds, deleteVoucher, setVoucherPlan,
   listSessions, queueCommand,
-  listOrders, salesSummary,
+  listOrders, salesSummary, financeSummary, salesByDay, salesByPlan, salesByMethod,
 } from "../db.js";
 import { generateRouterToken, generateVoucherCode } from "../codes.js";
 import { layout, esc } from "./html.js";
@@ -698,16 +698,80 @@ body{font-family:system-ui,Arial;margin:20px;background:#fff}
 });
 
 // --------------------------------------------------------------- ventes ----
+const HTG = (n) => Number(n || 0).toLocaleString("fr-FR");
+
+// Graphique en barres, une seule série (recette du jour) : une seule teinte,
+// pas de légende, libellé direct uniquement sur le meilleur jour.
+function dailyChart(days) {
+  const max = Math.max(...days.map((d) => d.htg), 1);
+  const best = days.reduce((a, b) => (b.htg > a.htg ? b : a), days[0] || { htg: 0 });
+  const jour = (iso) => new Date(iso).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
+
+  const bars = days.map((d) => {
+    const h = Math.round((d.htg / max) * 100);
+    const isBest = d.htg > 0 && d.htg === best.htg;
+    return `<div class="bar-slot" tabindex="0"
+      aria-label="${jour(d.jour)} : ${HTG(d.htg)} HTG, ${d.ventes} vente(s)">
+      <div class="bar-tip">${jour(d.jour)}<br><strong>${HTG(d.htg)} HTG</strong><br>${d.ventes} vente(s)</div>
+      <div class="bar" style="height:${h}%${isBest ? ";background:var(--accent-dark)" : ""}"></div>
+    </div>`;
+  }).join("");
+
+  // Repères horizontaux : traits pleins, une nuance au-dessus de la surface.
+  const ticks = [1, 0.5, 0].map((f) => `
+    <div class="gridline" style="bottom:${f * 100}%">
+      <span>${HTG(Math.round(max * f))}</span>
+    </div>`).join("");
+
+  return `
+    <div class="chart">
+      <div class="plot">${ticks}<div class="bars">${bars}</div></div>
+      <div class="xaxis"><span>${days.length ? jour(days[0].jour) : ""}</span>
+        <span>${best.htg > 0 ? "meilleur jour : " + jour(best.jour) + " (" + HTG(best.htg) + " HTG)" : ""}</span>
+        <span>${days.length ? jour(days[days.length - 1].jour) : ""}</span></div>
+    </div>`;
+}
+
 adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
-  const [orders, summary] = await Promise.all([listOrders(200), salesSummary()]);
-  const sumRows = summary.map((s) => `
-    <tr><td>${esc(s.router_name)}</td><td>${s.paid_count}</td><td><strong>${s.total_htg} HTG</strong></td></tr>`).join("");
+  const jours = Math.min(Math.max(Number(req.query.j) || 30, 7), 90);
+  const [orders, parRouteur, fin, parJour, parPlan, parMethode] = await Promise.all([
+    listOrders(200), salesSummary(), financeSummary(),
+    salesByDay(jours), salesByPlan(), salesByMethod(),
+  ]);
+
+  const moyenne = fin.total_count > 0 ? Math.round(fin.total_htg / fin.total_count) : 0;
+  // Combien de paiements engagés aboutissent : un taux qui chute signale un
+  // problème dans le tunnel, pas une baisse de la demande.
+  const engages = fin.total_count + fin.expired_count;
+  const conversion = engages > 0 ? Math.round((fin.total_count / engages) * 100) : null;
+
+  const tuile = (label, valeur, detail) => `
+    <div class="kpi">
+      <div class="kpi-label">${label}</div>
+      <div class="kpi-value">${valeur}</div>
+      <div class="kpi-detail">${detail || "&nbsp;"}</div>
+    </div>`;
+
+  const planRows = parPlan.map((p) => `
+    <tr><td>${esc(p.label)}</td><td style="color:var(--ink-soft)">${esc(p.router_name)}</td>
+      <td class="num">${p.ventes}</td><td class="num"><strong>${HTG(p.htg)}</strong></td></tr>`).join("");
+  const methodeRows = parMethode.map((m) => `
+    <tr><td>${esc(m.method)}</td><td class="num">${m.ventes}</td>
+      <td class="num"><strong>${HTG(m.htg)}</strong></td></tr>`).join("");
+  const routeurRows = parRouteur.map((r) => `
+    <tr><td>${esc(r.router_name)}</td><td class="num">${r.paid_count}</td>
+      <td class="num"><strong>${HTG(r.total_htg)}</strong></td></tr>`).join("");
+  // Vue tableau du graphique : tout ce qu'il montre reste lisible sans couleur.
+  const jourRows = parJour.filter((d) => d.ventes > 0).reverse().map((d) => `
+    <tr><td>${new Date(d.jour).toLocaleDateString("fr-FR")}</td>
+      <td class="num">${d.ventes}</td><td class="num"><strong>${HTG(d.htg)}</strong></td></tr>`).join("");
+
   const rows = orders.map((o) => `
     <tr>
       <td class="mono" style="font-size:12px">${esc(o.reference)}</td>
       <td>${esc(o.router_name)}</td>
       <td>${esc(o.plan_label)}</td>
-      <td>${o.amount_htg} HTG</td>
+      <td class="num">${HTG(o.amount_htg)}</td>
       <td>${esc(o.method)}</td>
       <td>${o.status === "DELIVERED" ? `<span class="pill ok">livré</span>`
           : o.status === "PAID" ? `<span class="pill wait">payé</span>`
@@ -718,16 +782,57 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
     </tr>`).join("");
 
   res.type("html").send(layout("Ventes", `
-    <h1>Ventes en ligne</h1>
+    <h1>Finances</h1>
     <p class="sub">Paiements Moncash / Natcash / Kashpaw via Pay'm.</p>
-    <div class="card">
-      <h2 style="margin-top:0">Résumé par routeur</h2>
-      <table><tr><th>Routeur</th><th>Ventes payées</th><th>Total</th></tr>
-      ${sumRows || `<tr><td colspan="3" style="color:var(--ink-soft)">Aucune vente.</td></tr>`}</table>
+
+    <div class="kpis">
+      ${tuile("Aujourd'hui", HTG(fin.today_htg) + " HTG", fin.today_count + " vente(s)")}
+      ${tuile("7 derniers jours", HTG(fin.week_htg) + " HTG", "")}
+      ${tuile("Ce mois", HTG(fin.month_htg) + " HTG", "")}
+      ${tuile("Total encaissé", HTG(fin.total_htg) + " HTG", fin.total_count + " vente(s)")}
+      ${tuile("Panier moyen", HTG(moyenne) + " HTG", "")}
+      ${tuile("Paiements aboutis", conversion === null ? "–" : conversion + " %",
+              conversion === null ? "" : fin.expired_count + " abandonné(s)")}
     </div>
+
     <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+        <h2 style="margin:0">Recette par jour</h2>
+        <div style="display:flex;gap:6px">
+          ${[7, 30, 90].map((n) => `<a class="btn ghost" style="padding:6px 12px"
+            href="/admin/orders?j=${n}">${n} j</a>`).join("")}
+        </div>
+      </div>
+      ${dailyChart(parJour)}
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;color:var(--ink-soft);font-size:13px">Voir en tableau</summary>
+        <table style="margin-top:10px">
+          <tr><th>Jour</th><th class="num">Ventes</th><th class="num">Recette</th></tr>
+          ${jourRows || `<tr><td colspan="3" style="color:var(--ink-soft)">Aucune vente sur la période.</td></tr>`}
+        </table>
+      </details>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h2 style="margin-top:0">Par forfait</h2>
+        <table><tr><th>Forfait</th><th>Routeur</th><th class="num">Ventes</th><th class="num">Recette</th></tr>
+        ${planRows || `<tr><td colspan="4" style="color:var(--ink-soft)">Aucune vente.</td></tr>`}</table>
+      </div>
+      <div class="card">
+        <h2 style="margin-top:0">Par moyen de paiement</h2>
+        <table><tr><th>Moyen</th><th class="num">Ventes</th><th class="num">Recette</th></tr>
+        ${methodeRows || `<tr><td colspan="3" style="color:var(--ink-soft)">Aucune vente.</td></tr>`}</table>
+        <h2>Par routeur</h2>
+        <table><tr><th>Routeur</th><th class="num">Ventes</th><th class="num">Recette</th></tr>
+        ${routeurRows || `<tr><td colspan="3" style="color:var(--ink-soft)">Aucune vente.</td></tr>`}</table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Dernières commandes</h2>
       <table>
-        <tr><th>Référence</th><th>Routeur</th><th>Forfait</th><th>Montant</th>
+        <tr><th>Référence</th><th>Routeur</th><th>Forfait</th><th class="num">Montant</th>
             <th>Méthode</th><th>État</th><th>Code</th><th>Date</th></tr>
         ${rows || `<tr><td colspan="8" style="color:var(--ink-soft)">Aucune commande.</td></tr>`}
       </table>

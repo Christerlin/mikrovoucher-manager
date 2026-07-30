@@ -37,7 +37,7 @@ header nav{display:flex;gap:4px;flex:1}
 header nav a{padding:7px 14px;border-radius:999px;text-decoration:none;color:var(--ink-soft);font-size:14px;font-weight:600}
 header nav a.on{background:var(--accent);color:#fff}
 header form{margin:0}
-main{max-width:1000px;margin:26px auto;padding:0 18px}
+main{max-width:1000px;margin:26px auto;padding:0 18px;overflow-x:clip}
 h1{font-family:Georgia,serif;font-size:22px;margin:0 0 4px}
 h2{font-family:Georgia,serif;font-size:17px;margin:26px 0 10px}
 .sub{color:var(--ink-soft);font-size:13px;margin:0 0 20px}
@@ -70,6 +70,44 @@ textarea{width:100%;min-height:220px;font-family:ui-monospace,Consolas,monospace
   font-size:12px;border:1px solid var(--line);border-radius:9px;background:#fffdf7;padding:10px}
 .err-msg{color:var(--err);font-weight:700;font-size:14px}
 a{color:var(--accent)}
+/* --- Finances : tuiles + graphique ------------------------------------- */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:12px;margin-bottom:18px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:14px 16px;box-shadow:0 4px 16px rgba(36,27,19,.07)}
+.kpi-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-soft);font-weight:700}
+/* Chiffre vedette : même sans que le reste, chiffres proportionnels. */
+.kpi-value{font-size:24px;font-weight:700;margin:6px 0 2px;line-height:1.1;
+  font-variant-numeric:proportional-nums}
+.kpi-detail{font-size:12px;color:var(--ink-soft)}
+
+.chart{margin-top:14px}
+.plot{position:relative;height:170px;margin-bottom:6px}
+/* Repères : traits pleins, une nuance au-dessus de la surface. */
+.gridline{position:absolute;left:0;right:0;border-top:1px solid var(--line);
+  pointer-events:none}
+.gridline span{position:absolute;right:0;top:-9px;background:var(--card);
+  padding-left:6px;font-size:10px;color:var(--ink-soft);
+  font-variant-numeric:tabular-nums}
+.bars{position:absolute;inset:0;display:flex;align-items:flex-end;gap:2px}
+.bar-slot{position:relative;flex:1;height:100%;display:flex;align-items:flex-end;
+  min-width:6px;outline:none}
+.bar{width:100%;background:var(--accent);border-radius:4px 4px 0 0;min-height:2px;
+  transition:background .15s}
+.bar-slot:hover .bar,.bar-slot:focus .bar{background:var(--accent-dark)}
+.bar-slot:focus-visible{box-shadow:0 0 0 2px var(--accent)}
+.bar-slot:focus .bar-tip{opacity:1}
+/* Info-bulle : complément, jamais le seul accès à la valeur (voir tableau). */
+.bar-tip{position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);
+  background:var(--ink);color:var(--card);padding:6px 9px;border-radius:8px;
+  font-size:11px;line-height:1.35;white-space:nowrap;opacity:0;pointer-events:none;
+  transition:opacity .12s;z-index:5}
+.bar-slot:hover .bar-tip,.bar-slot:focus .bar-tip{opacity:1}
+.xaxis{display:flex;justify-content:space-between;gap:10px;font-size:11px;
+  color:var(--ink-soft)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
 
 /* --- Mobile : le dashboard sert aussi depuis un téléphone --- */
@@ -81,6 +119,9 @@ a{color:var(--accent)}
   main{margin:16px auto;padding:0 12px}
   h1{font-size:19px}
   .card{padding:14px 14px}
+  .kpis{grid-template-columns:repeat(2,1fr);gap:10px}
+  .kpi-value{font-size:20px}
+  .plot{height:140px}
   /* Les tableaux larges défilent dans leur carte au lieu de déborder. */
   .card table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
   .card table td,.card table th{white-space:nowrap}

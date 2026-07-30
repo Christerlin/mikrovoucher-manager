@@ -20,15 +20,43 @@ export function layout(title, body, { active = "" } = {}) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · Mikrovoucher</title>
+<script>
+// Appliqué avant le premier rendu : sinon la page clignote au chargement.
+try {
+  var t = localStorage.getItem("mvm-theme");
+  if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+} catch (e) {}
+</script>
 <style>
+/* Palette validée pour les deux modes (contraste, bande de clarté, écart
+   perceptuel entre statuts sous daltonisme). Ne pas retoucher à l'oeil :
+   repasser par scripts/validate_palette.js du guide dataviz.
+   Le vert est la couleur d'action ; les statuts vivent sur d'autres teintes
+   pour qu'un bouton vert ne se lise pas comme "tout va bien". */
 :root{
-  --paper:#f2e6cf; --card:#fffaf0; --ink:#241b13; --ink-soft:#8a7455;
-  --line:#d9c49b; --accent:#c2410c; --accent-dark:#9a3412; --ok:#0d6b52; --err:#9c2b1f;
+  --paper:#0b0f0d; --card:#151b18; --ink:#e6efe9; --ink-soft:#8ea69a;
+  --line:#26312c; --accent:#16a34a; --accent-dark:#15803d;
+  --ok:#0891b2; --warn:#d97706; --err:#e11d48;
+  --grain:rgba(255,255,255,.03); --shadow:rgba(0,0,0,.4);
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme]){
+    --paper:#eef2ef; --card:#ffffff; --ink:#111c17; --ink-soft:#5c7268;
+    --line:#dde5e0; --accent:#16a34a; --accent-dark:#15803d;
+    --ok:#0891b2; --warn:#d97706; --err:#e11d48;
+    --grain:rgba(17,28,23,.04); --shadow:rgba(17,28,23,.10);
+  }
+}
+:root[data-theme="light"]{
+  --paper:#eef2ef; --card:#ffffff; --ink:#111c17; --ink-soft:#5c7268;
+  --line:#dde5e0; --accent:#16a34a; --accent-dark:#15803d;
+  --ok:#0891b2; --warn:#d97706; --err:#e11d48;
+  --grain:rgba(17,28,23,.04); --shadow:rgba(17,28,23,.10);
 }
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
   background:var(--paper);color:var(--ink);
-  background-image:radial-gradient(rgba(36,27,19,.05) 1px, transparent 1.2px);
+  background-image:radial-gradient(var(--grain) 1px, transparent 1.2px);
   background-size:15px 15px}
 header{display:flex;align-items:center;gap:18px;padding:14px 22px;
   background:var(--card);border-bottom:1px solid var(--line)}
@@ -37,12 +65,15 @@ header nav{display:flex;gap:4px;flex:1}
 header nav a{padding:7px 14px;border-radius:999px;text-decoration:none;color:var(--ink-soft);font-size:14px;font-weight:600}
 header nav a.on{background:var(--accent);color:#fff}
 header form{margin:0}
+#themeBtn{background:transparent;border:1.5px solid var(--line);color:var(--ink-soft);
+  padding:7px 12px;line-height:1;font-size:15px}
+#themeBtn:hover{background:transparent;border-color:var(--accent);color:var(--accent)}
 main{max-width:1000px;margin:26px auto;padding:0 18px;overflow-x:clip}
 h1{font-family:Georgia,serif;font-size:22px;margin:0 0 4px}
 h2{font-family:Georgia,serif;font-size:17px;margin:26px 0 10px}
 .sub{color:var(--ink-soft);font-size:13px;margin:0 0 20px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
-  padding:18px 20px;margin-bottom:18px;box-shadow:0 4px 16px rgba(36,27,19,.07)}
+  padding:18px 20px;margin-bottom:18px;box-shadow:0 4px 16px var(--shadow)}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);
   text-align:left;padding:8px 8px;border-bottom:1px solid var(--line)}
@@ -50,11 +81,11 @@ td{padding:9px 8px;border-bottom:1px dotted var(--line)}
 tr:last-child td{border-bottom:none}
 .mono{font-family:ui-monospace,'SF Mono',Consolas,monospace}
 .pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700}
-.pill.ok{background:rgba(13,107,82,.12);color:var(--ok)}
-.pill.off{background:rgba(156,43,31,.12);color:var(--err)}
-.pill.wait{background:rgba(180,83,9,.14);color:#92400e}
+.pill.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+.pill.off{background:color-mix(in srgb,var(--err) 16%,transparent);color:var(--err)}
+.pill.wait{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
 input,select{padding:9px 11px;border:1px solid var(--line);border-radius:9px;
-  background:#fffdf7;font-size:14px;color:var(--ink)}
+  background:var(--paper);font-size:14px;color:var(--ink)}
 input:focus,select:focus{outline:none;border-color:var(--accent)}
 button,.btn{display:inline-block;padding:9px 18px;border:0;border-radius:999px;
   background:var(--accent);color:#fff;font-weight:700;font-size:13px;cursor:pointer;
@@ -62,19 +93,20 @@ button,.btn{display:inline-block;padding:9px 18px;border:0;border-radius:999px;
 button:hover,.btn:hover{background:var(--accent-dark)}
 button.ghost,.btn.ghost{background:transparent;color:var(--accent);border:1.5px solid var(--line)}
 button.danger{background:var(--err);color:#fff;border:0}
-button.danger:hover{background:#7a2117}
+button.danger:hover{filter:brightness(.9)}
 form.inline{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
 form.inline label{display:flex;flex-direction:column;gap:4px;font-size:11px;
   letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:700}
 textarea{width:100%;min-height:220px;font-family:ui-monospace,Consolas,monospace;
-  font-size:12px;border:1px solid var(--line);border-radius:9px;background:#fffdf7;padding:10px}
+  font-size:12px;border:1px solid var(--line);border-radius:9px;background:var(--paper);
+  color:var(--ink);padding:10px}
 .err-msg{color:var(--err);font-weight:700;font-size:14px}
 a{color:var(--accent)}
 /* --- Finances : tuiles + graphique ------------------------------------- */
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
   gap:12px;margin-bottom:18px}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;
-  padding:14px 16px;box-shadow:0 4px 16px rgba(36,27,19,.07)}
+  padding:14px 16px;box-shadow:0 4px 16px var(--shadow)}
 .kpi-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;
   color:var(--ink-soft);font-weight:700}
 /* Chiffre vedette : même sans que le reste, chiffres proportionnels. */
@@ -102,7 +134,7 @@ a{color:var(--accent)}
 .bar-slot:focus .bar-tip{opacity:1}
 /* Info-bulle : complément, jamais le seul accès à la valeur (voir tableau). */
 .bar-tip{position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);
-  background:var(--ink);color:var(--card);padding:6px 9px;border-radius:8px;
+  background:var(--ink);color:var(--paper);padding:6px 9px;border-radius:8px;
   font-size:11px;line-height:1.35;white-space:nowrap;opacity:0;pointer-events:none;
   transition:opacity .12s;z-index:5}
 .bar-slot:hover .bar-tip,.bar-slot:focus .bar-tip{opacity:1}
@@ -143,10 +175,26 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 <header>
   <span class="brand">Mikrovoucher</span>
   <nav>${nav}</nav>
+  <button id="themeBtn" type="button" title="Changer de thème" aria-label="Changer de thème">◐</button>
   <form method="post" action="/admin/logout"><button class="ghost">Quitter</button></form>
 </header>
 <main>${body}</main>
 <script>
+// Bascule clair/sombre. Sans choix enregistré, on suit le réglage du système.
+(function () {
+  var btn = document.getElementById("themeBtn");
+  if (!btn) return;
+  function actuel() {
+    if (document.documentElement.dataset.theme) return document.documentElement.dataset.theme;
+    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  }
+  btn.addEventListener("click", function () {
+    var suivant = actuel() === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = suivant;
+    try { localStorage.setItem("mvm-theme", suivant); } catch (e) {}
+  });
+})();
+
 // Confirmations : le texte vit dans data-confirm (contexte attribut HTML,
 // correctement échappé). On n'injecte jamais de données dans du JS inline —
 // un simple apostrophe y suffirait à casser, voire détourner, le handler.

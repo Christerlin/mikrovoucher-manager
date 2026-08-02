@@ -119,8 +119,18 @@ function agentRsc(router, base) {
 # Mikrovoucher : agent pour "${router.name}" (genere par le dashboard)
 # RouterOS v7. Importer sur le routeur : /import mikrovoucher-agent.rsc
 # Prerequis : /system device-mode print -> hotspot=yes fetch=yes scheduler=yes
+#
+# Reimportable autant de fois qu'on veut : chaque element est retire avant
+# d'etre recree. Sans cela, "add" sur un nom deja pris renvoie une erreur et
+# l'import s'arrete la — le reste du fichier ne serait jamais applique.
 # =====================================================================
+
+# Le planificateur d'abord : il ne doit pas lancer le script pendant qu'on
+# est en train de le remplacer.
+/system scheduler
+remove [find name=mikrovoucher-sched]
 /system script
+remove [find name=mikrovoucher-agent]
 add name=mikrovoucher-agent dont-require-permissions=no source={
   :local backend "${base}";
   :local token "${router.pull_token}";
@@ -254,8 +264,10 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
 /system scheduler
 add name=mikrovoucher-sched interval=15s on-event="/system script run mikrovoucher-agent" \\
   comment="Mikrovoucher : tire les commandes du manager"
-# Walled-garden : les clients non connectes doivent atteindre le manager
+# Walled-garden : les clients non connectes doivent atteindre le manager.
+# Retire puis ajoute, sinon chaque reimport empile une regle de plus.
 /ip hotspot walled-garden
+remove [find comment="mikrovoucher manager"]
 add dst-host=${host} comment="mikrovoucher manager"
 # Rattrapage : les profils crees avant cette version n'ont pas de timeouts,
 # leurs sessions mortes continueraient a consommer le temps paye.
@@ -371,11 +383,13 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
     </div>
 
     <div class="card">
-        <h2 style="margin-top:0">Script agent (à importer une fois sur ce routeur)</h2>
+        <h2 style="margin-top:0">Script agent</h2>
         <p class="sub" style="margin:0 0 10px">Deux façons : <strong>Copier</strong> puis coller
         dans WinBox → New Terminal ; ou <strong>Télécharger</strong> le fichier
         <span class="mono">mikrovoucher-agent.rsc</span>, le glisser dans Files, puis lancer
-        <span class="mono">/import mikrovoucher-agent.rsc</span>.</p>
+        <span class="mono">/import mikrovoucher-agent.rsc</span>.
+        Réimportable à volonté : le script se remplace lui-même, rien à
+        supprimer d'abord.</p>
         <div style="display:flex;gap:10px;margin-bottom:10px">
           <button type="button" id="copyBtn" onclick="copyAgent()">Copier le script</button>
           <a class="btn ghost" href="/admin/routers/${router.id}/agent.rsc">Télécharger .rsc</a>

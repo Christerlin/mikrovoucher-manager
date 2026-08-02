@@ -8,6 +8,10 @@ function required(name) {
 
 export const config = {
   port: Number(process.env.PORT || 3000),
+  // Au-delà de ce silence, un routeur est considéré hors ligne par /health/routers.
+  // L'agent rapporte toutes les 15 s : 5 min laissent passer un redémarrage.
+  routerSilenceSeconds: Number(process.env.ROUTER_SILENCE_SECONDS || 300),
+
   databaseUrl: required("DATABASE_URL"),
 
   // Mot de passe du dashboard (un seul admin : c'est VOTRE instance).

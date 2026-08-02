@@ -8,7 +8,7 @@ import {
   createVoucher, listVouchers, getVouchersByIds, deleteVoucher, setVoucherPlan,
   listSessions, queueCommand, activeVouchers, resyncVouchers,
   listOrders, salesSummary, financeSummary, cashSummary, stockByPlan,
-  salesByDay, salesByPlan, salesByMethod, allSales,
+  salesByDay, salesByPlan, salesByMethod, allSales, dumpAll,
 } from "../db.js";
 import { generateRouterToken, generateVoucherCode, durationToSeconds } from "../codes.js";
 import { layout, esc } from "./html.js";
@@ -723,34 +723,77 @@ adminRouter.get("/admin/print", requireAdmin, async (req, res) => {
   const ids = String(req.query.ids || "").split(",").map(Number).filter(Number.isInteger);
   if (ids.length === 0) return res.redirect("/admin/routers");
   const vouchers = await getVouchersByIds(ids);
+  // Le nom du réseau vient de l'identité que le routeur rapporte : sans lui, le
+  // client tient un code sans savoir à quel WiFi se connecter.
+  const reseau = (vouchers[0] && vouchers[0].router_info && vouchers[0].router_info.identity)
+    || (vouchers[0] && vouchers[0].router_name) || "";
+
   const tickets = vouchers.map((v) => `
     <div class="tk">
-      <div class="tk-brand">Code WiFi</div>
+      <div class="tk-brand">${esc(reseau)}</div>
       <div class="tk-code">${esc(v.code)}</div>
-      <div class="tk-plan">${esc(v.plan_label || "")} · ${v.price_htg ?? ""} HTG</div>
+      <div class="tk-plan">${esc(v.plan_label || "")}${v.price_htg != null ? ` · ${v.price_htg} HTG` : ""}</div>
+      ${v.shared_users > 1 ? `<div class="tk-note">${v.shared_users} appareils</div>` : ""}
+      <div class="tk-how">Connectez-vous au WiFi, puis entrez ce code.</div>
     </div>`).join("");
 
   res.type("html").send(`<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><title>Impression vouchers</title>
 <style>
-body{font-family:system-ui,Arial;margin:20px;background:#fff}
-.bar{margin-bottom:16px}
-.bar button{padding:10px 20px;border:0;border-radius:8px;background:#c2410c;color:#fff;font-weight:700;cursor:pointer}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
-.tk{border:2px dashed #999;border-radius:10px;padding:12px;text-align:center;page-break-inside:avoid}
-.tk-brand{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#666}
-.tk-code{font-family:ui-monospace,Consolas,monospace;font-size:21px;font-weight:800;letter-spacing:.2em;margin:6px 0}
-.tk-plan{font-size:11px;color:#444}
-@media print{.bar{display:none}body{margin:0}}
+  body{font-family:system-ui,-apple-system,'Segoe UI',Arial;margin:16px;background:#fff;color:#111}
+  .bar{display:flex;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  .bar button{padding:10px 20px;border:0;border-radius:999px;background:#16a34a;color:#fff;
+    font-weight:700;cursor:pointer}
+  .bar a{color:#16a34a;font-weight:600}
+  .bar label{font-size:13px;color:#555;display:flex;align-items:center;gap:6px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:8px}
+  .grid.dense{grid-template-columns:repeat(auto-fill,minmax(125px,1fr))}
+  /* Pointillés = ligne de découpe. Rien ne doit toucher le bord. */
+  .tk{border:1px dashed #9aa;border-radius:8px;padding:10px 8px;text-align:center;
+    page-break-inside:avoid;break-inside:avoid}
+  .tk-brand{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:#666;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tk-code{font-family:ui-monospace,Consolas,monospace;font-size:19px;font-weight:800;
+    letter-spacing:.16em;margin:5px 0 3px}
+  .tk-plan{font-size:11px;color:#333;font-weight:600}
+  .tk-note{font-size:10px;color:#16a34a;font-weight:700;margin-top:2px}
+  .tk-how{font-size:9px;color:#777;margin-top:5px;line-height:1.3}
+  .grid.dense .tk-how{display:none}
+  .grid.dense .tk-code{font-size:16px}
+  @media print{
+    .bar{display:none}
+    body{margin:0}
+    /* Marges d'imprimante : sinon la dernière colonne saute. */
+    @page{margin:8mm}
+  }
 </style></head><body>
-<div class="bar"><button onclick="window.print()">Imprimer</button>
-  <a href="javascript:history.back()" style="margin-left:12px">Retour</a></div>
-<div class="grid">${tickets}</div>
+<div class="bar">
+  <button onclick="window.print()">Imprimer</button>
+  <label><input type="checkbox" id="dense"> Format compact (plus par page)</label>
+  <span style="color:#666;font-size:13px">${vouchers.length} voucher(s)</span>
+  <a href="javascript:history.back()">Retour</a>
+</div>
+<div class="grid" id="grid">${tickets}</div>
+<script>
+  document.getElementById("dense").addEventListener("change", function () {
+    document.getElementById("grid").classList.toggle("dense", this.checked);
+  });
+</script>
 </body></html>`);
 });
 
 // --------------------------------------------------------------- ventes ----
 const HTG = (n) => Number(n || 0).toLocaleString("fr-FR");
+
+// Sauvegarde intégrale (JSON) : à télécharger régulièrement et garder ailleurs
+// que chez l'hébergeur.
+adminRouter.get("/admin/backup.json", requireAdmin, async (req, res) => {
+  const data = await dumpAll();
+  const jour = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="mikrovoucher-${jour}.json"`);
+  res.send(JSON.stringify(data, null, 2));
+});
 
 // Export comptable. Séparateur ';' et BOM : Excel en français ouvre le fichier
 // directement, sans passer par l'assistant d'importation.
@@ -869,7 +912,9 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
     <h1>Finances</h1>
     <p class="sub">Ventes en ligne et vouchers vendus en espèces.
       <a class="btn ghost" style="padding:5px 12px;margin-left:8px"
-         href="/admin/export.csv">Exporter en CSV</a></p>
+         href="/admin/export.csv">Exporter en CSV</a>
+      <a class="btn ghost" style="padding:5px 12px;margin-left:6px"
+         href="/admin/backup.json">Sauvegarde complète</a></p>
 
     <div class="kpis">
       ${tuile("Aujourd'hui", HTG(fin.today_htg + cash.today_htg),

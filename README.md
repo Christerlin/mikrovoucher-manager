@@ -19,6 +19,8 @@ CGNAT** (Starlink, 4G) : les routeurs se connectent en **sortant**, aucun port
 - Sécurité éprouvée : réclamation atomique des paiements, claim token, PIN de
   récupération verrouillé anti-brute-force, jeton de passation à durée courte
 - **Script agent généré par le dashboard** pour chaque routeur (copier-coller)
+- **Sauvegarde JSON** de toute la base et **sonde d'alerte routeur hors ligne**
+  (voir [docs/SAUVEGARDE-ET-ALERTES.md](docs/SAUVEGARDE-ET-ALERTES.md))
 
 ## Déploiement (Render, ~10 min)
 
@@ -88,6 +90,8 @@ le portail du routeur où il a payé.
   l'accès au dashboard.
 - Restreignez `CORS_ORIGINS` en production.
 - Aucun secret dans ce dépôt : tout vit dans vos variables d'environnement.
+- Le fichier de sauvegarde n'inclut pas les jetons routeur : il peut circuler
+  sans donner la main sur un MikroTik.
 
 ## Licence
 MIT — développé par Christerlin Joseph.

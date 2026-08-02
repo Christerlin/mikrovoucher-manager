@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { config } from "./config.js";
-import { initDb, backfillPlanValidity, vouchersDejaEchus } from "./db.js";
+import { initDb, backfillPlanValidity, vouchersDejaEchus, routersSilencieux } from "./db.js";
 import { portalRouter, reconcile } from "./portal.js";
 import { agentRouter } from "./agent.js";
 import { adminRouter } from "./admin/pages.js";
@@ -33,6 +33,27 @@ const corsMw = cors({
 app.use("/api", corsMw);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Sonde à surveiller (UptimeRobot, cron-job.org...) : elle échoue quand un
+// routeur ne rapporte plus, ce qui déclenche l'alerte du service de
+// surveillance déjà en place — pas de compte ni de secret supplémentaire.
+app.get("/health/routers", async (_req, res) => {
+  try {
+    const muets = await routersSilencieux(config.routerSilenceSeconds);
+    if (muets.length === 0) return res.json({ ok: true });
+    res.status(503).json({
+      ok: false,
+      message: muets
+        .map((r) => `${r.name} hors ligne` +
+          (r.depuis ? ` depuis ${Math.round(r.depuis / 60)} min` : " (jamais vu)"))
+        .join(" ; "),
+      routeurs: muets,
+    });
+  } catch (err) {
+    console.error("[health/routers]", err.message);
+    res.status(500).json({ ok: false, message: "vérification impossible" });
+  }
+});
 
 app.use(portalRouter);
 app.use(agentRouter);

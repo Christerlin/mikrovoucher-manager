@@ -186,6 +186,20 @@ export async function listRouters() {
        FROM routers r ORDER BY r.id`);
   return rows;
 }
+// Routeurs qui ne rapportent plus. L'agent passe toutes les 15 s : au-delà de
+// quelques minutes, le routeur est éteint, sans Internet, ou son agent est
+// cassé — dans tous les cas les clients ne peuvent plus se connecter.
+export async function routersSilencieux(secondes) {
+  const { rows } = await pool.query(
+    `SELECT name, slug,
+            EXTRACT(EPOCH FROM (now() - last_seen))::int AS depuis
+       FROM routers
+      WHERE last_seen IS NULL
+         OR last_seen < now() - ($1 || ' seconds')::interval
+      ORDER BY name`, [secondes]);
+  return rows;
+}
+
 export async function getRouter(id) {
   const { rows } = await pool.query(`SELECT * FROM routers WHERE id = $1`, [id]);
   return rows[0] || null;
@@ -394,8 +408,11 @@ export async function listVouchers(routerId, limit = 100) {
 }
 export async function getVouchersByIds(ids) {
   const { rows } = await pool.query(
-    `SELECT v.*, p.label AS plan_label, p.price_htg
-       FROM vouchers v LEFT JOIN plans p ON p.id = v.plan_id
+    `SELECT v.*, p.label AS plan_label, p.price_htg, p.shared_users,
+            r.name AS router_name, r.info AS router_info
+       FROM vouchers v
+       LEFT JOIN plans p ON p.id = v.plan_id
+       JOIN routers r ON r.id = v.router_id
       WHERE v.id = ANY($1) ORDER BY v.id`, [ids]);
   return rows;
 }
@@ -720,6 +737,26 @@ export async function salesSummary() {
        FROM orders o JOIN routers r ON r.id = o.router_id
       GROUP BY r.name ORDER BY total_htg DESC`);
   return rows;
+}
+
+// Sauvegarde complète, portable : de quoi tout reconstruire si la base est
+// perdue (l'offre gratuite d'un hébergeur n'est pas une sauvegarde).
+export async function dumpAll() {
+  const t = async (sql) => (await pool.query(sql)).rows;
+  const [routers, plans, vouchers, orders] = await Promise.all([
+    t(`SELECT id, slug, name, portal_url, last_seen, created_at FROM routers ORDER BY id`),
+    t(`SELECT * FROM plans ORDER BY id`),
+    t(`SELECT * FROM vouchers ORDER BY id`),
+    t(`SELECT * FROM orders ORDER BY created_at`),
+  ]);
+  return {
+    version: 1,
+    genere_le: new Date().toISOString(),
+    // Les jetons des routeurs sont volontairement exclus : une sauvegarde
+    // circule (mail, clé USB) et ne doit pas donner la main sur un routeur.
+    note: "pull_token exclu — régénérer un routeur si besoin",
+    routers, plans, vouchers, orders,
+  };
 }
 
 export { pool };

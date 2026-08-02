@@ -157,13 +157,20 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
         :local cmt [:pick $rest ($p7 + 1) [:len $rest]];
         :if ($action = "add") do={
           # Profil par forfait : porte le nombre d'appareils simultanes.
+          # idle-timeout / keepalive-timeout sont "none" par defaut chez
+          # RouterOS : une session dont l'appareil s'eteint ou s'eloigne ne
+          # se fermerait JAMAIS. Deux consequences : le forfait continue de
+          # consommer le temps paye alors que personne n'est connecte, et la
+          # place reste occupee (re-login refuse tant que shared-users=1).
+          # Avec cookie/mac-cookie, la reconnexion est automatique : la
+          # deconnexion passe inapercue, seul le compteur s'arrete.
           :if ([:len $prof] > 0) do={
             :if ([:len [/ip hotspot user profile find name=$prof]] = 0) do={
               :do { /ip hotspot user profile add name=$prof shared-users=$shr \\
-                rate-limit=$rate; } on-error={}
+                rate-limit=$rate idle-timeout=5m keepalive-timeout=2m; } on-error={}
             } else={
               :do { /ip hotspot user profile set [find name=$prof] shared-users=$shr \\
-                rate-limit=$rate; } on-error={}
+                rate-limit=$rate idle-timeout=5m keepalive-timeout=2m; } on-error={}
             }
           }
           :if ([:len [/ip hotspot user find name=$code]] = 0) do={
@@ -250,6 +257,11 @@ add name=mikrovoucher-sched interval=15s on-event="/system script run mikrovouch
 # Walled-garden : les clients non connectes doivent atteindre le manager
 /ip hotspot walled-garden
 add dst-host=${host} comment="mikrovoucher manager"
+# Rattrapage : les profils crees avant cette version n'ont pas de timeouts,
+# leurs sessions mortes continueraient a consommer le temps paye.
+:foreach p in=[/ip hotspot user profile find where name!="default"] do={
+  :do { /ip hotspot user profile set $p idle-timeout=5m keepalive-timeout=2m; } on-error={}
+}
 `;
 }
 

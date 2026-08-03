@@ -7,7 +7,9 @@ export function esc(s) {
     .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
-export function layout(title, body, { active = "" } = {}) {
+// `side` : menu vertical d'une section (les pages d'un meme routeur, par
+// exemple). Il evite la page fourre-tout ou tout s'empile.
+export function layout(title, body, { active = "", side = null } = {}) {
   const nav = [
     ["/admin/routers", "Routeurs", "routers"],
     ["/admin/orders", "Ventes", "orders"],
@@ -59,6 +61,22 @@ body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-s
   background:var(--paper);color:var(--ink);
   background-image:radial-gradient(var(--grain) 1px, transparent 1.2px);
   background-size:15px 15px}
+/* Menu vertical de section : la colonne reste visible pendant qu'on
+   fait defiler la page, comme l'arbre de menus de WinBox. */
+.split{display:grid;grid-template-columns:210px minmax(0,1fr);gap:22px;align-items:start}
+.side{position:sticky;top:16px;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:2px}
+.side-title{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-soft);padding:6px 10px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side a{padding:9px 12px;border-radius:9px;text-decoration:none;color:var(--ink);
+  font-size:14px;font-weight:600}
+.side a:hover{background:var(--paper)}
+.side a.on{background:var(--accent);color:#fff}
+.side-back{margin-top:8px;border-top:1px solid var(--line);border-radius:0;
+  padding-top:12px !important;color:var(--ink-soft) !important;font-weight:600;font-size:13px}
+.side-back:hover{background:none !important;color:var(--ink) !important}
+.pane{min-width:0}
+
 header{display:flex;align-items:center;gap:18px;padding:14px 22px;
   background:var(--card);border-bottom:1px solid var(--line)}
 header .brand{font-family:Georgia,serif;font-weight:700;font-size:17px}
@@ -148,6 +166,13 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 /* --- Mobile : le dashboard sert aussi depuis un téléphone --- */
 @media (max-width:760px){
   .grid2{grid-template-columns:1fr}
+  /* Sous 900 px la colonne passe au-dessus, en rangee defilante. */
+  .split{grid-template-columns:1fr;gap:14px}
+  .side{position:static;flex-direction:row;overflow-x:auto;padding:8px}
+  .side a{white-space:nowrap}
+  .side-title{display:none}
+  .side-back{margin-top:0;border-top:none;border-left:1px solid var(--line);padding-top:9px !important}
+
   header{flex-wrap:wrap;gap:10px;padding:12px 14px}
   header nav{order:3;width:100%;overflow-x:auto}
   header nav a{white-space:nowrap}
@@ -179,7 +204,16 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   <button id="themeBtn" type="button" title="Changer de thème" aria-label="Changer de thème">◐</button>
   <form method="post" action="/admin/logout"><button class="ghost">Quitter</button></form>
 </header>
-<main>${body}</main>
+<main>${side ? `
+  <div class="split">
+    <aside class="side">
+      <div class="side-title">${esc(side.titre)}</div>
+      ${side.items.map(([href, label, key]) =>
+        `<a href="${href}" class="${side.actif === key ? "on" : ""}">${label}</a>`).join("")}
+      ${side.retour ? `<a class="side-back" href="${side.retour}">&larr; Tous les routeurs</a>` : ""}
+    </aside>
+    <div class="pane">${body}</div>
+  </div>` : body}</main>
 <script>
 // Bascule clair/sombre. Sans choix enregistré, on suit le réglage du système.
 (function () {

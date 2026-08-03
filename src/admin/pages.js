@@ -304,28 +304,41 @@ add dst-host=${host} comment="mikrovoucher manager"
 `;
 }
 
+// Menu vertical d'un routeur : une page par fonction, plutot qu'une seule
+// page ou tout s'empile.
+function menuRouteur(router, actif) {
+  const b = `/admin/routers/${router.id}`;
+  return {
+    titre: router.name,
+    actif,
+    retour: "/admin/routers",
+    items: [
+      [b, "Vue d'ensemble", "vue"],
+      [`${b}/plans`, "Forfaits", "plans"],
+      [`${b}/vouchers`, "Vouchers", "vouchers"],
+      [`${b}/files`, "Fichiers du portail", "files"],
+      [`${b}/agent`, "Script agent", "agent"],
+    ],
+  };
+}
+
+// Bandeau de retour d'action (depot de fichiers, effacement...) : sans lui,
+// une operation refusee ne laissait aucune trace a l'ecran.
+function bandeauMsg(req) {
+  const msg = String(req.query.msg || "").slice(0, 400);
+  return msg ? `<div class="card" style="border-color:var(--accent)">${esc(msg)}</div>` : "";
+}
+
 adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
-  const [plans, vouchers, sessions, attendus, fichiers] = await Promise.all([
-    listPlans(router.id), listVouchers(router.id, 500), listSessions(router.id),
-    activeVouchers(router.id), listPortalFiles(router.id),
+  // Forfaits et vouchers ont leur propre page : les charger ici ferait lire
+  // des centaines de lignes pour rien a chaque ouverture de la fiche.
+  const [sessions, attendus] = await Promise.all([
+    listSessions(router.id), activeVouchers(router.id),
   ]);
-  const base = publicBase(req);
 
-  const planRows = plans.map((p) => `
-    <tr>
-      <td class="mono">${esc(p.code)}</td><td>${esc(p.label)}</td>
-      <td>${p.price_htg} HTG</td><td class="mono">${esc(p.uptime)}</td>
-      <td>${p.shared_users}</td>
-      <td>${p.active ? "" : `<span class="pill off">inactif</span>`}</td>
-      <td><form method="post" action="/admin/routers/${router.id}/plans/delete" style="margin:0">
-        <input type="hidden" name="code" value="${esc(p.code)}">
-        <button class="danger">Retirer</button></form></td>
-    </tr>`).join("");
 
-  const activePlans = plans.filter((p) => p.active);
-  const voucherCount = vouchers.length;
   const fmtBytes = (n) => {
     n = Number(n) || 0;
     if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " Go";
@@ -397,53 +410,43 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       </form>
     </div>`;
 
-  // Retour d'action (depot de fichiers...) : sans lui, un fichier refuse
-  // disparaissait sans un mot et la page semblait n'avoir rien fait.
-  const msg = String(req.query.msg || "").slice(0, 400);
-  const bandeau = msg
-    ? `<div class="card" style="border-color:var(--accent)">${esc(msg)}</div>` : "";
-
   res.type("html").send(layout(router.name, `
     <h1>${esc(router.name)} <span id="statePill">${onlinePill(router.last_seen)}</span></h1>
-    ${bandeau}
+    ${bandeauMsg(req)}
     <p class="sub">Slug : <span class="mono">${esc(router.slug)}</span>
       &middot; Portail : <span class="mono">${esc(router.portal_url || "non défini")}</span></p>
     ${infoCard}
     ${alerte}
 
-    <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
-      <a class="btn" href="/admin/routers/${router.id}/vouchers">Vouchers (${voucherCount})</a>
-      <a class="btn ghost" href="/admin/routers/${router.id}/plans">Forfaits (${plans.filter((p) => p.active).length})</a>
-    </div>
-
     <div class="card">
-        <h2 style="margin-top:0">Script agent</h2>
-        <p class="sub" style="margin:0 0 10px">Deux façons : <strong>Copier</strong> puis coller
-        dans WinBox → New Terminal ; ou <strong>Télécharger</strong> le fichier
-        <span class="mono">mikrovoucher-agent.rsc</span>, le glisser dans Files, puis lancer
-        <span class="mono">/import mikrovoucher-agent.rsc</span>.
-        Réimportable à volonté : le script se remplace lui-même, rien à
-        supprimer d'abord.</p>
-        <div style="display:flex;gap:10px;margin-bottom:10px">
-          <button type="button" id="copyBtn" onclick="copyAgent()">Copier le script</button>
-          <a class="btn ghost" href="/admin/routers/${router.id}/agent.rsc">Télécharger .rsc</a>
-        </div>
-        <textarea id="agentScript" readonly onclick="this.select()">${esc(agentRsc(router, base))}</textarea>
-        <script>
-          function copyAgent() {
-            var ta = document.getElementById('agentScript');
-            var btn = document.getElementById('copyBtn');
-            ta.select();
-            var done = function () { btn.textContent = 'Copié !';
-              setTimeout(function () { btn.textContent = 'Copier le script'; }, 2000); };
-            if (navigator.clipboard) {
-              navigator.clipboard.writeText(ta.value).then(done, function () { document.execCommand('copy'); done(); });
-            } else { document.execCommand('copy'); done(); }
-          }
-        </script>
-      </div>
+      <h2 style="margin-top:0">Clients connectés
+        <span class="pill ok" id="sessCount">${sessions.length}</span></h2>
+      <table>
+        <tr><th>Code</th><th>Forfait</th><th>Temps restant</th><th>IP</th><th>MAC</th>
+            <th>Connecté depuis</th><th>Données ↓ / ↑</th><th></th></tr>
+        <tbody id="sessBody">
+        ${sessionRows || `<tr><td colspan="8" style="color:var(--ink-soft)">Personne connecté pour l'instant.</td></tr>`}
+        </tbody>
+      </table>
     </div>
 
+    <script id="liveScript" src="/admin/live.js" data-router-id="${router.id}"></script>
+
+    <form method="post" action="/admin/routers/${router.id}/delete"
+          data-confirm="Supprimer ce routeur et tout son historique ?">
+      <button class="danger">Supprimer ce routeur</button>
+    </form>`, { active: "routers", side: menuRouteur(router, "vue") }));
+
+// Page dediee : fichiers du portail captif.
+adminRouter.get("/admin/routers/:id/files", requireAdmin, async (req, res) => {
+  const router = await getRouter(Number(req.params.id));
+  if (!router) return res.redirect("/admin/routers");
+  const fichiers = await listPortalFiles(router.id);
+
+  res.type("html").send(layout(`Fichiers : ${router.name}`, `
+    <h1>Fichiers du portail</h1>
+    <p class="sub">${esc(router.name)}</p>
+    ${bandeauMsg(req)}
     <div class="card">
       <h2 style="margin-top:0">Fichiers du portail</h2>
       <p class="sub" style="margin:0 0 12px">Déposez ici les pages du portail
@@ -503,27 +506,49 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
         <button type="submit">Enregistrer</button>
       </form>
     </div>
+`, { active: "routers", side: menuRouteur(router, "files") }));
+});
 
+
+// Page dediee : script a importer sur le routeur.
+adminRouter.get("/admin/routers/:id/agent", requireAdmin, async (req, res) => {
+  const router = await getRouter(Number(req.params.id));
+  if (!router) return res.redirect("/admin/routers");
+  const base = publicBase(req);
+
+  res.type("html").send(layout(`Script agent : ${router.name}`, `
+    <h1>Script agent</h1>
+    <p class="sub">${esc(router.name)}</p>
     <div class="card">
-      <h2 style="margin-top:0">Clients connectés
-        <span class="pill ok" id="sessCount">${sessions.length}</span></h2>
-      <table>
-        <tr><th>Code</th><th>Forfait</th><th>Temps restant</th><th>IP</th><th>MAC</th>
-            <th>Connecté depuis</th><th>Données ↓ / ↑</th><th></th></tr>
-        <tbody id="sessBody">
-        ${sessionRows || `<tr><td colspan="8" style="color:var(--ink-soft)">Personne connecté pour l'instant.</td></tr>`}
-        </tbody>
-      </table>
+        <h2 style="margin-top:0">Script agent</h2>
+        <p class="sub" style="margin:0 0 10px">Deux façons : <strong>Copier</strong> puis coller
+        dans WinBox → New Terminal ; ou <strong>Télécharger</strong> le fichier
+        <span class="mono">mikrovoucher-agent.rsc</span>, le glisser dans Files, puis lancer
+        <span class="mono">/import mikrovoucher-agent.rsc</span>.
+        Réimportable à volonté : le script se remplace lui-même, rien à
+        supprimer d'abord.</p>
+        <div style="display:flex;gap:10px;margin-bottom:10px">
+          <button type="button" id="copyBtn" onclick="copyAgent()">Copier le script</button>
+          <a class="btn ghost" href="/admin/routers/${router.id}/agent.rsc">Télécharger .rsc</a>
+        </div>
+        <textarea id="agentScript" readonly onclick="this.select()">${esc(agentRsc(router, base))}</textarea>
+        <script>
+          function copyAgent() {
+            var ta = document.getElementById('agentScript');
+            var btn = document.getElementById('copyBtn');
+            ta.select();
+            var done = function () { btn.textContent = 'Copié !';
+              setTimeout(function () { btn.textContent = 'Copier le script'; }, 2000); };
+            if (navigator.clipboard) {
+              navigator.clipboard.writeText(ta.value).then(done, function () { document.execCommand('copy'); done(); });
+            } else { document.execCommand('copy'); done(); }
+          }
+        </script>
+      </div>
     </div>
+`, { active: "routers", side: menuRouteur(router, "agent") }));
+});
 
-    <script id="liveScript" src="/admin/live.js" data-router-id="${router.id}"></script>
-
-
-
-    <form method="post" action="/admin/routers/${router.id}/delete"
-          data-confirm="Supprimer ce routeur et tout son historique ?">
-      <button class="danger">Supprimer ce routeur</button>
-    </form>`, { active: "routers" }));
 });
 
 // Script client de la fiche routeur, servi comme fichier statique.
@@ -626,7 +651,7 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
       <p class="sub" style="margin:12px 0 0">Un code existant est mis à jour.
       « Appareils » = nombre d'appareils pouvant utiliser le même voucher en même temps.
       Le débit limite chaque client de ce forfait ; laissez vide ou 0 pour ne pas limiter.</p>
-    </div>`, { active: "routers" }));
+    </div>`, { active: "routers", side: menuRouteur(router, "plans") }));
 });
 
 // Page dédiée aux vouchers d'un routeur (la fiche routeur reste légère).
@@ -715,7 +740,7 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
             <th>Créé</th><th></th></tr>
         ${rows || `<tr><td colspan="7" style="color:var(--ink-soft)">Aucun voucher.</td></tr>`}
       </table>
-    </div>`, { active: "routers" }));
+    </div>`, { active: "routers", side: menuRouteur(router, "vouchers") }));
 });
 
 // Change le forfait d'un voucher : le compte est recréé sur le routeur avec

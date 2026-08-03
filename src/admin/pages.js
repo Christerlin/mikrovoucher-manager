@@ -213,6 +213,12 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
           :do { /ip hotspot cookie remove [find user=$code]; } on-error={}
           :do { /ip hotspot user remove [find name=$code]; } on-error={}
         }
+        # Effacement d'un fichier du portail. Meme verrou de chemin que
+        # l'envoi : $cmt est prefixe du dossier du hotspot et valide cote
+        # serveur, on ne peut donc pas effacer ailleurs.
+        :if ($action = "rmfile") do={
+          :do { /file remove [find name=$cmt]; } on-error={}
+        }
         # Fichier du portail pousse depuis le dashboard : $code porte
         # l'identifiant du fichier, $cmt le chemin de destination (deja
         # prefixe du dossier du hotspot et valide cote serveur).
@@ -464,12 +470,18 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
             <td>${f.pushed_at
                   ? `<span class="pill ok">Sur le routeur</span>`
                   : `<span class="pill wait">À pousser</span>`}</td>
-            <td style="text-align:right">
+            <td style="text-align:right;white-space:nowrap">
               <form method="post" style="display:inline"
                     action="/admin/routers/${router.id}/files/${f.id}/delete"
-                    data-confirm="Supprimer ${esc(f.path)} de la liste ?">
-                <button class="btn ghost" type="submit">Retirer</button>
+                    data-confirm="Retirer ${esc(f.path)} de cette liste ? Le fichier reste sur le routeur.">
+                <button class="btn ghost" type="submit">Retirer d'ici</button>
               </form>
+              ${f.pushed_at ? `
+              <form method="post" style="display:inline"
+                    action="/admin/routers/${router.id}/files/${f.id}/unlink"
+                    data-confirm="Effacer ${esc(f.path)} SUR LE ROUTEUR ? Le portail cassera si la page est encore utilisée.">
+                <button class="btn ghost" type="submit">Effacer du routeur</button>
+              </form>` : ""}
             </td>
           </tr>`).join("") || `<tr><td colspan="4" style="color:var(--ink-soft)">
           Aucun fichier déposé.</td></tr>`}
@@ -800,6 +812,22 @@ adminRouter.post("/admin/routers/:id/files/:fid/delete", requireAdmin, async (re
   const id = Number(req.params.id);
   await deletePortalFile(id, Number(req.params.fid));
   res.redirect(`/admin/routers/${id}`);
+});
+
+// Efface le fichier SUR le routeur, puis le retire de la liste : il n'y est
+// plus, le garder afficherait un etat faux.
+adminRouter.post("/admin/routers/:id/files/:fid/unlink", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const router = await getRouter(id);
+  if (!router) return res.redirect("/admin/routers");
+  const fichiers = await listPortalFiles(id);
+  const f = fichiers.find((x) => x.id === Number(req.params.fid));
+  const dossier = cheminPortailValide(router.portal_dir || "hotspot");
+  if (!f || !dossier) return res.redirect(`/admin/routers/${id}`);
+  await queueCommand(id, "rmfile", { comment: `${dossier}/${f.path}` });
+  await deletePortalFile(id, f.id);
+  res.redirect(`/admin/routers/${id}?msg=` +
+    encodeURIComponent(`Effacement de ${f.path} demandé au routeur.`));
 });
 
 adminRouter.post("/admin/routers/:id/files/push", requireAdmin, async (req, res) => {

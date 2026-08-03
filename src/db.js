@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import { config } from "./config.js";
-import { durationToSeconds } from "./codes.js";
+import { durationToSeconds, generateRouterToken } from "./codes.js";
 
 function buildDbSsl() {
   const ca = process.env.DATABASE_CA_CERT;
@@ -419,6 +419,98 @@ export async function compterClic(routerId, id) {
     `UPDATE sponsors SET clicks = clicks + 1 WHERE id = $2 AND router_id = $1`,
     [routerId, id]);
   return rowCount === 1;
+}
+
+// -------------------------------------------------- restauration ----
+
+// Restaure une sauvegarde. Volontairement ADDITIVE : elle remet ce qui
+// manque et ne supprime jamais rien. Une restauration qui efface serait une
+// deuxieme facon de perdre ses donnees.
+//
+// Les identifiants du fichier ne veulent rien dire dans une base neuve : on
+// rapproche par slug (routeurs), par code (forfaits, vouchers) et par
+// reference (ventes). Le jeton d'un routeur ne figure pas dans la sauvegarde
+// — un routeur recree en obtient un neuf, et son script doit etre reimporte.
+export async function restaurer(data) {
+  const bilan = { routeurs: 0, forfaits: 0, vouchers: 0, ventes: 0, ignores: 0 };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const mapRouteur = new Map();   // ancien id -> nouvel id
+    for (const r of data.routers || []) {
+      if (!r.slug) { bilan.ignores += 1; continue; }
+      let { rows } = await client.query(`SELECT id FROM routers WHERE slug = $1`, [r.slug]);
+      if (rows.length === 0) {
+        const ins = await client.query(
+          `INSERT INTO routers (slug, name, pull_token, portal_url)
+           VALUES ($1,$2,$3,$4) RETURNING id`,
+          [r.slug, r.name || r.slug, generateRouterToken(), r.portal_url || ""]);
+        rows = ins.rows;
+        bilan.routeurs += 1;
+      }
+      mapRouteur.set(r.id, rows[0].id);
+    }
+
+    const mapPlan = new Map();
+    for (const p of data.plans || []) {
+      const rid = mapRouteur.get(p.router_id);
+      if (!rid || !p.code) { bilan.ignores += 1; continue; }
+      const { rows } = await client.query(
+        `INSERT INTO plans (router_id, code, label, price_htg, uptime,
+                            shared_users, rate_limit, validity_seconds, active)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (router_id, code) DO UPDATE SET code = EXCLUDED.code
+         RETURNING id, (xmax = 0) AS cree`,
+        [rid, p.code, p.label || p.code, p.price_htg || 0, p.uptime || "1d",
+         p.shared_users || 1, p.rate_limit || "", p.validity_seconds || 0,
+         p.active !== false]);
+      if (rows[0].cree) bilan.forfaits += 1;
+      mapPlan.set(p.id, rows[0].id);
+    }
+
+    const mapVoucher = new Map();
+    for (const v of data.vouchers || []) {
+      const rid = mapRouteur.get(v.router_id);
+      if (!rid || !v.code) { bilan.ignores += 1; continue; }
+      const { rows } = await client.query(
+        `INSERT INTO vouchers (router_id, code, plan_id, source, status,
+                               created_at, used_at, used_uptime, used_bytes, expired_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT (router_id, code) DO UPDATE SET code = EXCLUDED.code
+         RETURNING id, (xmax = 0) AS cree`,
+        [rid, v.code, mapPlan.get(v.plan_id) || null, v.source || "batch",
+         v.status || "QUEUED", v.created_at || new Date(), v.used_at || null,
+         v.used_uptime || null, v.used_bytes || 0, v.expired_at || null]);
+      if (rows[0].cree) bilan.vouchers += 1;
+      mapVoucher.set(v.id, rows[0].id);
+    }
+
+    for (const o of data.orders || []) {
+      const rid = mapRouteur.get(o.router_id);
+      const pid = mapPlan.get(o.plan_id);
+      if (!rid || !pid || !o.reference) { bilan.ignores += 1; continue; }
+      const { rowCount } = await client.query(
+        `INSERT INTO orders (reference, router_id, plan_id, amount_htg, method,
+                             claim_hash, retrieval_pin, status, voucher_id,
+                             paym_transaction_id, created_at, paid_at, delivered_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         ON CONFLICT (reference) DO NOTHING`,
+        [o.reference, rid, pid, o.amount_htg || 0, o.method || "?",
+         o.claim_hash || "", o.retrieval_pin || null, o.status || "PENDING",
+         mapVoucher.get(o.voucher_id) || null, o.paym_transaction_id || null,
+         o.created_at || new Date(), o.paid_at || null, o.delivered_at || null]);
+      if (rowCount === 1) bilan.ventes += 1;
+    }
+
+    await client.query("COMMIT");
+    return bilan;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // ------------------------------------------------- remise a zero ----

@@ -48,7 +48,22 @@ dashboard et réimportez son script d'agent — c'est une minute de travail.
 opération risquée (changement de forfaits, migration, mise à jour). Gardez-la
 ailleurs que chez l'hébergeur (Drive, disque local).
 
-**Restauration :** le fichier est du JSON lisible. Recréez le routeur et les
-forfaits dans le dashboard, puis réinjectez les vouchers encore actifs. Comme
-l'agent ignore les codes déjà présents, une resynchronisation depuis la fiche
-du routeur suffit ensuite à remettre le MikroTik d'aplomb.
+**Restauration :** dans **Finances → Restaurer une sauvegarde**, déposez le
+fichier. L'opération est **additive** : elle remet ce qui manque et n'efface
+jamais rien — une restauration qui supprime serait une deuxième façon de
+perdre ses données. On peut donc la relancer sans risque : ce qui existe déjà
+est laissé tel quel.
+
+Les identifiants du fichier ne veulent rien dire dans une base neuve ; le
+rapprochement se fait par slug (routeurs), par code (forfaits, vouchers) et
+par référence (ventes). Les liens entre une vente et son voucher sont
+rétablis au passage.
+
+Deux gestes restent manuels après une restauration, et c'est voulu :
+
+1. **Réimporter le script agent** du routeur. La sauvegarde ne contient pas
+   son jeton, donc un routeur recréé en reçoit un neuf — l'ancien script ne
+   serait plus reconnu.
+2. **« Resynchroniser les vouchers »** depuis la fiche du routeur, pour
+   remettre les codes sur l'appareil. L'agent ignore ceux qui s'y trouvent
+   déjà, l'opération est sans danger.

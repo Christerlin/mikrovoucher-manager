@@ -13,7 +13,7 @@ import {
   cheminPortailValide, upsertPortalFile, listPortalFiles,
   deletePortalFile, setPortalDir,
   listSponsors, createSponsor, setSponsorImage, toggleSponsor, deleteSponsor,
-  dureeRouterOsValide, setTrial, remiseAZero,
+  dureeRouterOsValide, setTrial, remiseAZero, restaurer,
 } from "../db.js";
 import { generateRouterToken, generateVoucherCode, durationToSeconds } from "../codes.js";
 import { layout, esc } from "./html.js";
@@ -1317,6 +1317,25 @@ const HTG = (n) => Number(n || 0).toLocaleString("fr-FR");
 
 // Sauvegarde intégrale (JSON) : à télécharger régulièrement et garder ailleurs
 // que chez l'hébergeur.
+adminRouter.post("/admin/restore", requireAdmin,
+  upload.single("sauvegarde"), async (req, res) => {
+    const retour = (m) => res.redirect("/admin/orders?msg=" + encodeURIComponent(m));
+    if (!req.file) return retour("Aucun fichier reçu.");
+    let data;
+    try { data = JSON.parse(req.file.buffer.toString("utf8")); }
+    catch { return retour("Fichier illisible : ce n'est pas du JSON."); }
+    if (!data || typeof data !== "object" || !Array.isArray(data.routers)) {
+      return retour("Ce fichier n'est pas une sauvegarde Mikrovoucher.");
+    }
+    const b = await restaurer(data);
+    console.log("[restore]", JSON.stringify(b));
+    return retour(
+      `Restauration : ${b.routeurs} routeur(s), ${b.forfaits} forfait(s), ` +
+      `${b.vouchers} voucher(s), ${b.ventes} vente(s) ajoutés. ` +
+      `Ce qui existait déjà a été laissé tel quel` +
+      (b.ignores ? `, ${b.ignores} ligne(s) ignorée(s)` : "") + ".");
+  });
+
 // Remise a zero de fin d'essais. Mot a taper : un clic distrait ne doit pas
 // suffire a effacer la comptabilite.
 adminRouter.post("/admin/reset", requireAdmin, async (req, res) => {
@@ -1541,6 +1560,23 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
             <th>Méthode</th><th>État</th><th>Code</th><th>Date</th></tr>
         ${rows || `<tr><td colspan="8" style="color:var(--ink-soft)">Aucune commande.</td></tr>`}
       </table>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Restaurer une sauvegarde</h2>
+      <p class="sub" style="margin:0 0 12px">Reprend un fichier
+      <span class="mono">mikrovoucher-….json</span>. La restauration
+      <strong>ajoute ce qui manque et n'efface rien</strong> : une
+      restauration qui supprime serait une deuxième façon de perdre ses
+      données. Un routeur absent est recréé avec un <strong>nouveau
+      jeton</strong> — la sauvegarde n'en contient pas — il faut donc
+      réimporter son script agent, puis « Resynchroniser » pour remettre les
+      codes sur l'appareil.</p>
+      <form class="inline" method="post" action="/admin/restore"
+            enctype="multipart/form-data">
+        <label>Fichier <input type="file" name="sauvegarde" accept="application/json,.json" required></label>
+        <button type="submit">Restaurer</button>
+      </form>
     </div>
 
     <div class="card" style="border-color:var(--err)">

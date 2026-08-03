@@ -99,7 +99,7 @@ adminRouter.get("/admin/routers", requireAdmin, async (req, res) => {
       </form>
       <p class="sub" style="margin:10px 0 0">Le slug identifie le routeur dans l'API du portail
       (lettres minuscules/chiffres/tirets). L'URL du portail sert au retour de paiement.</p>
-    </div>`, { active: "routers" }));
+    </div>`, { active: "routers", side: menuGeneral("g-routeurs") }));
 });
 
 adminRouter.post("/admin/routers", requireAdmin, async (req, res) => {
@@ -311,7 +311,6 @@ function menuRouteur(router, actif) {
   return {
     titre: router.name,
     actif,
-    retour: "/admin/routers",
     items: [
       [b, "Vue d'ensemble", "vue"],
       [`${b}/plans`, "Forfaits", "plans"],
@@ -319,7 +318,20 @@ function menuRouteur(router, actif) {
       [`${b}/files`, "Fichiers du portail", "files"],
       [`${b}/agent`, "Script agent", "agent"],
     ],
+    // Les deux sections du dashboard, pour ne pas avoir a remonter en haut.
+    bas: [
+      ["/admin/routers", "Routeurs", "g-routeurs"],
+      ["/admin/orders", "Ventes", "g-ventes"],
+    ],
   };
+}
+
+// Menu des pages qui ne dependent pas d'un routeur (liste, finances).
+function menuGeneral(actif) {
+  return { titre: "Menu", actif, items: [
+    ["/admin/routers", "Routeurs", "g-routeurs"],
+    ["/admin/orders", "Ventes", "g-ventes"],
+  ] };
 }
 
 // Bandeau de retour d'action (depot de fichiers, effacement...) : sans lui,
@@ -1229,5 +1241,5 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
             <th>Méthode</th><th>État</th><th>Code</th><th>Date</th></tr>
         ${rows || `<tr><td colspan="8" style="color:var(--ink-soft)">Aucune commande.</td></tr>`}
       </table>
-    </div>`, { active: "orders" }));
+    </div>`, { active: "orders", side: menuGeneral("g-ventes") }));
 });

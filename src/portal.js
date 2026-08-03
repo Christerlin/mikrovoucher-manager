@@ -72,6 +72,28 @@ portalRouter.get("/api/portal/:slug/plans", rateLimit(60), async (req, res) => {
   }
 });
 
+// 0b) Echeance reelle d'un code. Le routeur decompte le temps de CONNEXION ;
+// l'acces, lui, expire 24 h apres la premiere connexion, hors ligne compris.
+// Sans cela la page de statut annonce au client bien plus de temps qu'il n'en
+// a vraiment, et le code meurt sans prevenir.
+portalRouter.get("/api/portal/:slug/expiry/:code", rateLimit(60), async (req, res) => {
+  try {
+    const router = await getRouterBySlug(String(req.params.slug));
+    if (!router) return res.status(404).json({ error: "Inconnu." });
+    const code = String(req.params.code || "");
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(code)) return res.status(404).json({ error: "Inconnu." });
+    const { echeanceVoucher } = await import("./db.js");
+    const restant = await echeanceVoucher(router.id, code);
+    // Meme reponse pour un code inconnu et un code sans echeance : on ne
+    // transforme pas l'API en detecteur de codes valides.
+    if (restant === null) return res.status(404).json({ error: "Inconnu." });
+    res.json({ restant: Math.max(0, restant) });
+  } catch (err) {
+    console.error("[expiry]", err.message);
+    res.status(502).json({ error: "Indisponible." });
+  }
+});
+
 // 1) Créer un paiement.
 portalRouter.post("/api/checkout", rateLimit(12), async (req, res) => {
   try {

@@ -65,18 +65,21 @@ body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-s
   background-size:15px 15px}
 /* Menu vertical de section : la colonne reste visible pendant qu'on
    fait defiler la page, comme l'arbre de menus de WinBox. */
-.split{display:grid;grid-template-columns:210px minmax(0,1fr);gap:22px;align-items:start}
+.split{display:grid;grid-template-columns:210px minmax(0,1fr);gap:22px;align-items:start;
+  transition:grid-template-columns .22s ease, gap .22s ease}
+/* Le repli s'anime par la largeur de colonne (une longueur, donc animable) :
+   display:none aurait fait disparaitre la colonne d'un coup. */
 .side{position:sticky;top:16px;background:var(--card);border:1px solid var(--line);
-  border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:2px}
+  border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:2px;
+  min-width:0;overflow:hidden;white-space:nowrap;
+  transition:opacity .18s ease, transform .22s ease, padding .22s ease}
 .side-title{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
   color:var(--ink-soft);padding:6px 10px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .side a{padding:9px 12px;border-radius:9px;text-decoration:none;color:var(--ink);
   font-size:14px;font-weight:600}
 .side a:hover{background:var(--paper)}
 .side a.on{background:var(--accent);color:#fff}
-.side-back{margin-top:8px;border-top:1px solid var(--line);border-radius:0;
-  padding-top:12px !important;color:var(--ink-soft) !important;font-weight:600;font-size:13px}
-.side-back:hover{background:none !important;color:var(--ink) !important}
+.side-sep{height:1px;background:var(--line);margin:8px 6px}
 .pane{min-width:0}
 
 header{display:flex;align-items:center;gap:18px;padding:14px 22px;
@@ -93,10 +96,15 @@ header form{margin:0}
 main{max-width:1000px;margin:26px auto;padding:0 18px;overflow-x:clip}
 /* Avec la colonne de menu, la zone utile perd 230 px : on elargit d'autant,
    sinon la page parait vide alors qu'elle est juste a l'etroit. */
-main.with-side{max-width:1240px}
+main.with-side{max-width:1240px;transition:max-width .22s ease}
 :root[data-side="off"] main.with-side{max-width:1000px}
-:root[data-side="off"] .side{display:none}
-:root[data-side="off"] .split{grid-template-columns:minmax(0,1fr)}
+:root[data-side="off"] .split{grid-template-columns:0 minmax(0,1fr);gap:0}
+:root[data-side="off"] .side{opacity:0;transform:translateX(-10px);
+  padding:0;border-width:0;pointer-events:none}
+/* Certains preferent l'absence d'animation : on la respecte. */
+@media (prefers-reduced-motion: reduce){
+  .split,.side,main.with-side{transition:none}
+}
 h1{font-family:Georgia,serif;font-size:22px;margin:0 0 4px}
 h2{font-family:Georgia,serif;font-size:17px;margin:26px 0 10px}
 .sub{color:var(--ink-soft);font-size:13px;margin:0 0 20px}
@@ -178,7 +186,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   .side{position:static;flex-direction:row;overflow-x:auto;padding:8px}
   .side a{white-space:nowrap}
   .side-title{display:none}
-  .side-back{margin-top:0;border-top:none;border-left:1px solid var(--line);padding-top:9px !important}
+  .side-sep{width:1px;height:auto;margin:2px 4px}
   main.with-side{max-width:1000px}
 }
 
@@ -224,7 +232,9 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
       <div class="side-title">${esc(side.titre)}</div>
       ${side.items.map(([href, label, key]) =>
         `<a href="${href}" class="${side.actif === key ? "on" : ""}">${label}</a>`).join("")}
-      ${side.retour ? `<a class="side-back" href="${side.retour}">&larr; Tous les routeurs</a>` : ""}
+      ${(side.bas || []).length ? `<div class="side-sep"></div>` : ""}
+      ${(side.bas || []).map(([href, label, key]) =>
+        `<a href="${href}" class="${side.actif === key ? "on" : ""}">${label}</a>`).join("")}
     </aside>
     <div class="pane">${body}</div>
   </div>` : body}</main>

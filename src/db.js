@@ -299,6 +299,20 @@ export async function setPortalDir(routerId, dir) {
   await pool.query(`UPDATE routers SET portal_dir = $2 WHERE id = $1`, [routerId, dir]);
 }
 
+// Echeance calendaire d'un voucher deja utilise. Le routeur, lui, ne connait
+// que le temps de connexion restant : il ignore que le code meurt 24 h apres
+// la premiere connexion, meme passees hors ligne.
+export async function echeanceVoucher(routerId, code) {
+  const { rows } = await pool.query(
+    `SELECT EXTRACT(EPOCH FROM (v.used_at
+              + (p.validity_seconds || ' seconds')::interval - now()))::int AS restant
+       FROM vouchers v JOIN plans p ON p.id = v.plan_id
+      WHERE v.router_id = $1 AND v.code = $2
+        AND v.used_at IS NOT NULL AND v.expired_at IS NULL
+        AND p.validity_seconds > 0`, [routerId, code]);
+  return rows[0] ? rows[0].restant : null;
+}
+
 export async function upsertPortalFile(routerId, path, buffer) {
   const { rows } = await pool.query(
     `INSERT INTO portal_files (router_id, path, content, bytes)

@@ -270,8 +270,14 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 // Confirmations : le texte vit dans data-confirm (contexte attribut HTML,
 // correctement échappé). On n'injecte jamais de données dans du JS inline —
 // un simple apostrophe y suffirait à casser, voire détourner, le handler.
+// Un formulaire peut porter plusieurs boutons (imprimer / supprimer) : la
+// confirmation du bouton l'emporte sur celle du formulaire, et data-noconfirm
+// permet a un bouton inoffensif de ne rien demander.
 document.addEventListener("submit", function (e) {
-  var msg = e.target && e.target.dataset ? e.target.dataset.confirm : null;
+  var b = e.submitter;
+  var d = b && b.dataset ? b.dataset : null;
+  if (d && "noconfirm" in d) return;
+  var msg = (d && d.confirm) || (e.target && e.target.dataset ? e.target.dataset.confirm : null);
   if (msg && !confirm(msg)) e.preventDefault();
 }, true);
 </script>

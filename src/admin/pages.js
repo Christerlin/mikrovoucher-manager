@@ -830,6 +830,8 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
 
   const rows = shown.map((v) => `
     <tr>
+      <td><input type="checkbox" class="pick" name="ids" value="${v.id}" form="lot"
+                 aria-label="Sélectionner ${esc(v.code)}"></td>
       <td class="mono"><strong>${esc(v.code)}</strong></td>
       <td>
         <form method="post" action="/admin/routers/${router.id}/vouchers/${v.id}/plan"
@@ -858,6 +860,7 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
   res.type("html").send(layout(`Vouchers : ${router.name}`, `
     <h1>Vouchers</h1>
     <p class="sub">${esc(router.name)}</p>
+    ${bandeauMsg(req)}
     
 
     <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
@@ -886,12 +889,45 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
           <button class="ghost" type="submit">Filtrer</button>
         </form>
       </div>
+      <!-- Le formulaire vit hors du tableau ; les cases s'y rattachent par
+           leur attribut form=. Deux boutons, deux destinations. -->
+      <form id="lot" method="post"
+            action="/admin/routers/${router.id}/vouchers/delete"
+            data-confirm="Supprimer les codes sélectionnés ? Les clients connectés seront déconnectés."
+            style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
+        <span id="pickCount" style="font-size:13px;color:var(--ink-soft)">0 sélectionné</span>
+        <button class="ghost" type="submit" formmethod="get" formaction="/admin/print"
+                data-noconfirm formnovalidate>Imprimer la sélection</button>
+        <button class="danger" type="submit">Supprimer la sélection</button>
+      </form>
+
       <table style="margin-top:12px">
-        <tr><th>Code</th><th>Forfait</th><th>Origine</th><th>État</th><th>Expire dans</th>
+        <tr><th style="width:26px"><input type="checkbox" id="pickAll" aria-label="Tout sélectionner"></th>
+            <th>Code</th><th>Forfait</th><th>Origine</th><th>État</th><th>Expire dans</th>
             <th>Créé</th><th></th></tr>
-        ${rows || `<tr><td colspan="7" style="color:var(--ink-soft)">Aucun voucher.</td></tr>`}
+        ${rows || `<tr><td colspan="8" style="color:var(--ink-soft)">Aucun voucher.</td></tr>`}
       </table>
-    </div>`, { active: "routers", side: menuRouteur(router, "vouchers") }));
+    </div>
+
+    <script>
+      (function () {
+        var tout = document.getElementById("pickAll");
+        var cases = [].slice.call(document.querySelectorAll(".pick"));
+        var compteur = document.getElementById("pickCount");
+        if (!cases.length) return;
+        function majuscule() {
+          var n = cases.filter(function (c) { return c.checked; }).length;
+          compteur.textContent = n + " sélectionné" + (n > 1 ? "s" : "");
+          if (tout) tout.checked = n === cases.length;
+        }
+        if (tout) tout.addEventListener("change", function () {
+          cases.forEach(function (c) { c.checked = tout.checked; });
+          majuscule();
+        });
+        cases.forEach(function (c) { c.addEventListener("change", majuscule); });
+        majuscule();
+      })();
+    </script>`, { active: "routers", side: menuRouteur(router, "vouchers") }));
 });
 
 // Change le forfait d'un voucher : le compte est recréé sur le routeur avec
@@ -920,7 +956,25 @@ adminRouter.post("/admin/routers/:id/vouchers/:vid/delete", requireAdmin, async 
   const routerId = Number(req.params.id);
   const removed = await deleteVoucher(routerId, Number(req.params.vid));
   if (removed) await queueCommand(routerId, "remove", { code: removed.code });
-  res.redirect(`/admin/routers/${routerId}`);
+  res.redirect(`/admin/routers/${routerId}/vouchers`);
+});
+
+// Suppression en lot depuis la selection.
+adminRouter.post("/admin/routers/:id/vouchers/delete", requireAdmin, async (req, res) => {
+  const routerId = Number(req.params.id);
+  const brut = (req.body || {}).ids;
+  const ids = (Array.isArray(brut) ? brut : [brut])
+    .map(Number).filter(Number.isInteger);
+  const retour = (m) =>
+    res.redirect(`/admin/routers/${routerId}/vouchers?msg=` + encodeURIComponent(m));
+  if (ids.length === 0) return retour("Aucun code sélectionné.");
+
+  let n = 0;
+  for (const id of ids) {
+    const removed = await deleteVoucher(routerId, id);
+    if (removed) { await queueCommand(routerId, "remove", { code: removed.code }); n += 1; }
+  }
+  return retour(`${n} code(s) supprimé(s). Les clients connectés seront déconnectés.`);
 });
 
 // Recrée tous les vouchers actifs sur le routeur (réparation après reset).
@@ -1193,7 +1247,10 @@ adminRouter.post("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =
 
 // Page d'impression des vouchers (tickets à découper).
 adminRouter.get("/admin/print", requireAdmin, async (req, res) => {
-  const ids = String(req.query.ids || "").split(",").map(Number).filter(Number.isInteger);
+  // La selection arrive soit en "1,2,3", soit en ids=1&ids=2 (cases cochees).
+  const brut = req.query.ids;
+  const ids = (Array.isArray(brut) ? brut : String(brut || "").split(","))
+    .map(Number).filter(Number.isInteger);
   if (ids.length === 0) return res.redirect("/admin/routers");
   const vouchers = await getVouchersByIds(ids);
   // Le nom du réseau vient de l'identité que le routeur rapporte : sans lui, le

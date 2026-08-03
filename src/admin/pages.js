@@ -1,6 +1,7 @@
 // Pages du dashboard : routeurs, plans, vouchers, ventes.
 
 import { Router } from "express";
+import multer from "multer";
 import { config } from "../config.js";
 import {
   listRouters, getRouter, createRouter, deleteRouter,
@@ -9,12 +10,22 @@ import {
   listSessions, queueCommand, activeVouchers, resyncVouchers,
   listOrders, salesSummary, financeSummary, cashSummary, stockByPlan,
   salesByDay, salesByPlan, salesByMethod, allSales, dumpAll,
+  cheminPortailValide, upsertPortalFile, listPortalFiles,
+  deletePortalFile, setPortalDir,
 } from "../db.js";
 import { generateRouterToken, generateVoucherCode, durationToSeconds } from "../codes.js";
 import { layout, esc } from "./html.js";
 import { requireAdmin, loginPage, handleLogin, handleLogout } from "./auth.js";
 
 export const adminRouter = Router();
+
+// Fichiers du portail gardes en memoire puis ecrits en base : rien ne touche
+// le disque de l'hebergeur, qui est jetable. Plafond volontairement bas, ce
+// sont des pages et des images de portail captif.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024, files: 20 },
+});
 
 // Express 4 ne rattrape pas le rejet d'un handler async : une erreur SQL
 // isolée suffirait à tuer le process (et donc tout le service). On enveloppe
@@ -202,6 +213,16 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
           :do { /ip hotspot cookie remove [find user=$code]; } on-error={}
           :do { /ip hotspot user remove [find name=$code]; } on-error={}
         }
+        # Fichier du portail pousse depuis le dashboard : $code porte
+        # l'identifiant du fichier, $cmt le chemin de destination (deja
+        # prefixe du dossier du hotspot et valide cote serveur).
+        :if ($action = "fetch") do={
+          :do {
+            /tool fetch url=("$backend/agent/file/$code") \\
+              http-header-field=("x-router-token: $token") \\
+              dst-path=$cmt;
+          } on-error={}
+        }
         :do {
           /tool fetch url=("$backend/agent/ack?id=$cmdid") \\
             http-header-field=("x-router-token: $token") \\
@@ -280,9 +301,9 @@ add dst-host=${host} comment="mikrovoucher manager"
 adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
-  const [plans, vouchers, sessions, attendus] = await Promise.all([
+  const [plans, vouchers, sessions, attendus, fichiers] = await Promise.all([
     listPlans(router.id), listVouchers(router.id, 500), listSessions(router.id),
-    activeVouchers(router.id),
+    activeVouchers(router.id), listPortalFiles(router.id),
   ]);
   const base = publicBase(req);
 
@@ -408,6 +429,60 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
           }
         </script>
       </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Fichiers du portail</h2>
+      <p class="sub" style="margin:0 0 12px">Déposez ici les pages du portail
+      captif ; le routeur vient les chercher tout seul au prochain cycle. Le
+      chemin est celui du sous-dossier, tel quel :
+      <span class="mono">login.html</span>, <span class="mono">css/theme.css</span>,
+      <span class="mono">img/logo.png</span>. Ils ne peuvent être écrits que
+      dans le dossier du portail.</p>
+
+      <form method="post" action="/admin/routers/${router.id}/files"
+            enctype="multipart/form-data" class="inline" style="margin-bottom:14px">
+        <label>Fichiers <input type="file" name="fichiers" multiple required></label>
+        <label>Sous-dossier
+          <input name="prefixe" placeholder="(racine), ex : css" size="10"></label>
+        <button type="submit">Déposer</button>
+      </form>
+
+      <table>
+        <tr><th>Chemin</th><th>Taille</th><th>État</th><th></th></tr>
+        ${fichiers.map((f) => `
+          <tr>
+            <td class="mono">${esc(f.path)}</td>
+            <td>${Math.max(1, Math.round(f.bytes / 1024))} Ko</td>
+            <td>${f.pushed_at
+                  ? `<span class="pill ok">Sur le routeur</span>`
+                  : `<span class="pill wait">À pousser</span>`}</td>
+            <td style="text-align:right">
+              <form method="post" style="display:inline"
+                    action="/admin/routers/${router.id}/files/${f.id}/delete"
+                    data-confirm="Supprimer ${esc(f.path)} de la liste ?">
+                <button class="btn ghost" type="submit">Retirer</button>
+              </form>
+            </td>
+          </tr>`).join("") || `<tr><td colspan="4" style="color:var(--ink-soft)">
+          Aucun fichier déposé.</td></tr>`}
+      </table>
+
+      ${fichiers.length > 0 ? `
+      <form method="post" action="/admin/routers/${router.id}/files/push"
+            style="margin-top:12px"
+            data-confirm="Envoyer les ${fichiers.length} fichier(s) sur le routeur ?">
+        <button type="submit">Pousser sur le routeur</button>
+      </form>` : ""}
+
+      <p class="sub" style="margin:14px 0 0">Dossier du portail sur ce routeur.
+      Il dépend du modèle : vérifiez avec <span class="mono">/file print</span>
+      si les fichiers n'arrivent pas.</p>
+      <form class="inline" method="post" action="/admin/routers/${router.id}/portal-dir">
+        <label>Dossier <input name="dir" value="${esc(router.portal_dir || "hotspot")}"
+               pattern="[A-Za-z0-9._/-]+" size="16" required></label>
+        <button type="submit">Enregistrer</button>
+      </form>
     </div>
 
     <div class="card">
@@ -670,6 +745,54 @@ adminRouter.post("/admin/routers/:id/kick", requireAdmin, async (req, res) => {
 });
 
 // Téléchargement du script agent, prêt à glisser dans Files puis /import.
+// --------------------------------------------- fichiers du portail ----
+adminRouter.post("/admin/routers/:id/files", requireAdmin,
+  upload.array("fichiers", 20), async (req, res) => {
+    const id = Number(req.params.id);
+    const router = await getRouter(id);
+    if (!router) return res.redirect("/admin/routers");
+    // Le sous-dossier vient d'un champ libre : il passe par la meme validation
+    // que le nom de fichier, sinon "../../" y suffirait pour sortir du portail.
+    const prefixe = cheminPortailValide(String(req.body.prefixe || "") || "x");
+    const dossier = req.body.prefixe ? (prefixe ? prefixe + "/" : null) : "";
+    if (dossier === null) return res.redirect(`/admin/routers/${id}`);
+    for (const f of req.files || []) {
+      const chemin = cheminPortailValide(dossier + f.originalname);
+      if (!chemin) continue;                       // nom refuse : on l'ignore
+      await upsertPortalFile(id, chemin, f.buffer);
+    }
+    res.redirect(`/admin/routers/${id}`);
+  });
+
+adminRouter.post("/admin/routers/:id/files/:fid/delete", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  await deletePortalFile(id, Number(req.params.fid));
+  res.redirect(`/admin/routers/${id}`);
+});
+
+adminRouter.post("/admin/routers/:id/files/push", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const router = await getRouter(id);
+  if (!router) return res.redirect("/admin/routers");
+  const dossier = cheminPortailValide(router.portal_dir || "hotspot");
+  if (!dossier) return res.redirect(`/admin/routers/${id}`);
+  for (const f of await listPortalFiles(id)) {
+    // $code porte l'identifiant du fichier, $cmt le chemin de destination.
+    await queueCommand(id, "fetch", {
+      code: String(f.id), fileId: f.id,
+      comment: `${dossier}/${f.path}`,
+    });
+  }
+  res.redirect(`/admin/routers/${id}`);
+});
+
+adminRouter.post("/admin/routers/:id/portal-dir", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const dir = cheminPortailValide(String(req.body.dir || ""));
+  if (dir) await setPortalDir(id, dir);
+  res.redirect(`/admin/routers/${id}`);
+});
+
 adminRouter.get("/admin/routers/:id/agent.rsc", requireAdmin, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");

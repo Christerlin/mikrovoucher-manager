@@ -53,6 +53,9 @@ export async function initDb() {
     ALTER TABLE routers ADD COLUMN IF NOT EXISTS portal_url TEXT NOT NULL DEFAULT '';
     -- Dernier rapport d'état envoyé par l'agent (identité, version, CPU...).
     ALTER TABLE routers ADD COLUMN IF NOT EXISTS info JSONB;
+    -- Dossier du portail sur le routeur. Varie selon le modele (avec ou sans
+    -- flash) : verifiable par /file print sur le routeur concerne.
+    ALTER TABLE routers ADD COLUMN IF NOT EXISTS portal_dir TEXT NOT NULL DEFAULT 'hotspot';
 
     -- Sessions hotspot actives, remplacées à chaque rapport de l'agent.
     CREATE TABLE IF NOT EXISTS sessions (
@@ -103,6 +106,20 @@ export async function initDb() {
     );
     CREATE INDEX IF NOT EXISTS commands_pending_idx
       ON commands (router_id, id) WHERE status = 'PENDING';
+
+    -- Fichiers du portail captif, pousses sur le routeur par l'agent.
+    -- Stockes en base et non sur disque : l'hebergeur peut recycler le
+    -- conteneur a tout moment, un fichier ecrit sur disque disparaitrait.
+    CREATE TABLE IF NOT EXISTS portal_files (
+      id          SERIAL PRIMARY KEY,
+      router_id   INT NOT NULL REFERENCES routers(id) ON DELETE CASCADE,
+      path        TEXT NOT NULL,             -- relatif au dossier du hotspot
+      content     BYTEA NOT NULL,
+      bytes       INT NOT NULL,
+      pushed_at   TIMESTAMPTZ,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (router_id, path)
+    );
 
     CREATE TABLE IF NOT EXISTS vouchers (
       id          SERIAL PRIMARY KEY,
@@ -263,6 +280,61 @@ export async function listSessions(routerId) {
 }
 
 // Met en file une commande brute pour un routeur (ex : suppression d'un code).
+// ---------------------------------------------- fichiers du portail ----
+
+// Chemin de destination sur le routeur. Verrou volontairement etroit : le
+// tableau de bord ne doit jamais pouvoir ecrire ailleurs que dans le dossier
+// du portail. Sans cela, quiconque obtient le mot de passe admin ecraserait
+// n'importe quel fichier du routeur.
+export function cheminPortailValide(chemin) {
+  const p = String(chemin || "").replace(/^\/+/, "");
+  if (p.length === 0 || p.length > 120) return null;
+  if (p.includes("..") || p.includes("\\")) return null;
+  if (!/^[A-Za-z0-9._\/-]+$/.test(p)) return null;
+  if (p.endsWith("/")) return null;
+  return p;
+}
+
+export async function setPortalDir(routerId, dir) {
+  await pool.query(`UPDATE routers SET portal_dir = $2 WHERE id = $1`, [routerId, dir]);
+}
+
+export async function upsertPortalFile(routerId, path, buffer) {
+  const { rows } = await pool.query(
+    `INSERT INTO portal_files (router_id, path, content, bytes)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (router_id, path) DO UPDATE
+       SET content = $3, bytes = $4, updated_at = now(), pushed_at = NULL
+     RETURNING id, path, bytes`,
+    [routerId, path, buffer, buffer.length]);
+  return rows[0];
+}
+
+export async function listPortalFiles(routerId) {
+  const { rows } = await pool.query(
+    `SELECT id, path, bytes, pushed_at, updated_at
+       FROM portal_files WHERE router_id = $1 ORDER BY path`, [routerId]);
+  return rows;
+}
+
+export async function getPortalFileContent(routerId, id) {
+  const { rows } = await pool.query(
+    `SELECT path, content FROM portal_files WHERE id = $1 AND router_id = $2`,
+    [id, routerId]);
+  return rows[0] || null;
+}
+
+export async function deletePortalFile(routerId, id) {
+  await pool.query(`DELETE FROM portal_files WHERE id = $1 AND router_id = $2`,
+    [id, routerId]);
+}
+
+export async function markPortalFilePushed(routerId, id) {
+  await pool.query(
+    `UPDATE portal_files SET pushed_at = now() WHERE id = $1 AND router_id = $2`,
+    [id, routerId]);
+}
+
 export async function queueCommand(routerId, action, payload) {
   const { rows } = await pool.query(
     `INSERT INTO commands (router_id, action, payload) VALUES ($1,$2,$3) RETURNING *`,
@@ -435,6 +507,11 @@ export async function ackCommand(routerId, commandId) {
         WHERE id = $1 AND router_id = $2 AND status = 'PENDING'
         RETURNING id`, [commandId, routerId]);
     if (upd.rowCount === 1) {
+      // Un push de fichier est confirme par le meme accuse de reception.
+      await client.query(
+        `UPDATE portal_files SET pushed_at = now()
+          WHERE id = (SELECT (payload->>'fileId')::int FROM commands
+                       WHERE id = $1 AND action = 'fetch')`, [commandId]);
       const v = await client.query(
         `UPDATE vouchers SET status='ON_ROUTER' WHERE command_id = $1 RETURNING id`,
         [commandId]);

@@ -11,6 +11,7 @@ import { Router } from "express";
 import {
   getRouterByToken, touchRouter, nextCommand, ackCommand,
   updateRouterInfo, replaceSessions, markVouchersUsed,
+  getPortalFileContent,
 } from "./db.js";
 
 export const agentRouter = Router();
@@ -69,6 +70,25 @@ agentRouter.get("/agent/next", async (req, res) => {
   } catch (err) {
     console.error("[agent/next]", err.message);
     res.status(502).type("text/plain").send("");
+  }
+});
+
+// Fichier du portail, servi a l'agent pour /tool fetch. Meme jeton que le
+// reste : un fichier n'est lisible que par le routeur auquel il appartient.
+agentRouter.get("/agent/file/:id", async (req, res) => {
+  try {
+    const router = await authRouterDevice(req, res);
+    if (!router) return;
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).send("bad id");
+    const f = await getPortalFileContent(router.id, id);
+    if (!f) return res.status(404).send("not found");
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Length", f.content.length);
+    res.send(f.content);
+  } catch (err) {
+    console.error("[agent/file]", err.message);
+    res.status(502).send("");
   }
 });
 

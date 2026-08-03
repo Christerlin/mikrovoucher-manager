@@ -27,6 +27,8 @@ export function layout(title, body, { active = "", side = null } = {}) {
 try {
   var t = localStorage.getItem("mvm-theme");
   if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+  // Menu ouvert par defaut : seul un choix explicite de fermeture est retenu.
+  if (localStorage.getItem("mvm-side") === "off") document.documentElement.dataset.side = "off";
 } catch (e) {}
 </script>
 <style>
@@ -84,10 +86,17 @@ header nav{display:flex;gap:4px;flex:1}
 header nav a{padding:7px 14px;border-radius:999px;text-decoration:none;color:var(--ink-soft);font-size:14px;font-weight:600}
 header nav a.on{background:var(--accent);color:#fff}
 header form{margin:0}
+#sideBtn{padding:6px 11px;font-size:15px;line-height:1;border:1.5px solid var(--line)}
 #themeBtn{background:transparent;border:1.5px solid var(--line);color:var(--ink-soft);
   padding:7px 12px;line-height:1;font-size:15px}
 #themeBtn:hover{background:transparent;border-color:var(--accent);color:var(--accent)}
 main{max-width:1000px;margin:26px auto;padding:0 18px;overflow-x:clip}
+/* Avec la colonne de menu, la zone utile perd 230 px : on elargit d'autant,
+   sinon la page parait vide alors qu'elle est juste a l'etroit. */
+main.with-side{max-width:1240px}
+:root[data-side="off"] main.with-side{max-width:1000px}
+:root[data-side="off"] .side{display:none}
+:root[data-side="off"] .split{grid-template-columns:minmax(0,1fr)}
 h1{font-family:Georgia,serif;font-size:22px;margin:0 0 4px}
 h2{font-family:Georgia,serif;font-size:17px;margin:26px 0 10px}
 .sub{color:var(--ink-soft);font-size:13px;margin:0 0 20px}
@@ -163,16 +172,19 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
 
-/* --- Mobile : le dashboard sert aussi depuis un téléphone --- */
-@media (max-width:760px){
-  .grid2{grid-template-columns:1fr}
-  /* Sous 900 px la colonne passe au-dessus, en rangee defilante. */
+/* La colonne bascule des 900 px : en dessous, elle serre trop le contenu. */
+@media (max-width:900px){
   .split{grid-template-columns:1fr;gap:14px}
   .side{position:static;flex-direction:row;overflow-x:auto;padding:8px}
   .side a{white-space:nowrap}
   .side-title{display:none}
   .side-back{margin-top:0;border-top:none;border-left:1px solid var(--line);padding-top:9px !important}
+  main.with-side{max-width:1000px}
+}
 
+/* --- Mobile : le dashboard sert aussi depuis un téléphone --- */
+@media (max-width:760px){
+  .grid2{grid-template-columns:1fr}
   header{flex-wrap:wrap;gap:10px;padding:12px 14px}
   header nav{order:3;width:100%;overflow-x:auto}
   header nav a{white-space:nowrap}
@@ -199,12 +211,14 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 </head>
 <body>
 <header>
+  ${side ? `<button id="sideBtn" class="ghost" type="button"
+      title="Afficher ou masquer le menu" aria-label="Afficher ou masquer le menu">&#9776;</button>` : ""}
   <span class="brand">Mikrovoucher</span>
   <nav>${nav}</nav>
   <button id="themeBtn" type="button" title="Changer de thème" aria-label="Changer de thème">◐</button>
   <form method="post" action="/admin/logout"><button class="ghost">Quitter</button></form>
 </header>
-<main>${side ? `
+<main class="${side ? "with-side" : ""}">${side ? `
   <div class="split">
     <aside class="side">
       <div class="side-title">${esc(side.titre)}</div>
@@ -228,6 +242,18 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
     var suivant = actuel() === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = suivant;
     try { localStorage.setItem("mvm-theme", suivant); } catch (e) {}
+  });
+})();
+
+// Menu lateral : ouvert par defaut, fermeture memorisee.
+(function () {
+  var b = document.getElementById("sideBtn");
+  if (!b) return;
+  b.addEventListener("click", function () {
+    var ferme = document.documentElement.dataset.side === "off";
+    if (ferme) { delete document.documentElement.dataset.side; }
+    else { document.documentElement.dataset.side = "off"; }
+    try { localStorage.setItem("mvm-side", ferme ? "on" : "off"); } catch (e) {}
   });
 })();
 

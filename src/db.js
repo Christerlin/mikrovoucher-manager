@@ -421,6 +421,43 @@ export async function compterClic(routerId, id) {
   return rowCount === 1;
 }
 
+// ------------------------------------------------- remise a zero ----
+
+// Efface l'historique des ventes, et si demande les vouchers eux-memes.
+// Pensee pour la fin des tests : on repart sur des chiffres vrais. Les codes
+// supprimes sont retires du routeur, sinon ils resteraient utilisables alors
+// qu'ils ont disparu du manager.
+export async function remiseAZero({ vouchers = false } = {}) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rowCount: commandes } = await client.query(`DELETE FROM orders`);
+
+    let codes = 0;
+    if (vouchers) {
+      // Les remove partent AVANT la suppression : une fois la ligne partie,
+      // on ne saurait plus quel compte retirer du routeur.
+      const { rows } = await client.query(`SELECT router_id, code FROM vouchers`);
+      for (const v of rows) {
+        await client.query(
+          `INSERT INTO commands (router_id, action, payload) VALUES ($1,'remove',$2)`,
+          [v.router_id, { code: v.code }]);
+      }
+      // Le lien orders -> vouchers est deja tombe avec les commandes.
+      await client.query(`UPDATE vouchers SET command_id = NULL`);
+      const r = await client.query(`DELETE FROM vouchers`);
+      codes = r.rowCount;
+    }
+    await client.query("COMMIT");
+    return { commandes, codes };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export async function upsertPortalFile(routerId, path, buffer) {
   const { rows } = await pool.query(
     `INSERT INTO portal_files (router_id, path, content, bytes)

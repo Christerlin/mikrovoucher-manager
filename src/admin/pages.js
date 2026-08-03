@@ -13,7 +13,7 @@ import {
   cheminPortailValide, upsertPortalFile, listPortalFiles,
   deletePortalFile, setPortalDir,
   listSponsors, createSponsor, setSponsorImage, toggleSponsor, deleteSponsor,
-  dureeRouterOsValide, setTrial,
+  dureeRouterOsValide, setTrial, remiseAZero,
 } from "../db.js";
 import { generateRouterToken, generateVoucherCode, durationToSeconds } from "../codes.js";
 import { layout, esc } from "./html.js";
@@ -1317,6 +1317,21 @@ const HTG = (n) => Number(n || 0).toLocaleString("fr-FR");
 
 // Sauvegarde intégrale (JSON) : à télécharger régulièrement et garder ailleurs
 // que chez l'hébergeur.
+// Remise a zero de fin d'essais. Mot a taper : un clic distrait ne doit pas
+// suffire a effacer la comptabilite.
+adminRouter.post("/admin/reset", requireAdmin, async (req, res) => {
+  const retour = (m) => res.redirect("/admin/orders?msg=" + encodeURIComponent(m));
+  if (String((req.body || {}).confirm || "").trim().toUpperCase() !== "EFFACER") {
+    return retour("Rien effacé : le mot de confirmation ne correspond pas.");
+  }
+  const avecVouchers = (req.body || {}).vouchers === "1";
+  const { commandes, codes } = await remiseAZero({ vouchers: avecVouchers });
+  console.log(`[reset] ${commandes} commande(s), ${codes} voucher(s)`);
+  return retour(avecVouchers
+    ? `Remise à zéro : ${commandes} vente(s) et ${codes} code(s) effacés. Les codes sont en cours de retrait des routeurs.`
+    : `Remise à zéro : ${commandes} vente(s) effacée(s). Les codes sont conservés.`);
+});
+
 adminRouter.get("/admin/backup.json", requireAdmin, async (req, res) => {
   const data = await dumpAll();
   const jour = new Date().toISOString().slice(0, 10);
@@ -1440,6 +1455,7 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
 
   res.type("html").send(layout("Ventes", `
     <h1>Finances</h1>
+    ${bandeauMsg(req)}
     <p class="sub">Ventes en ligne et vouchers vendus en espèces.
       <a class="btn ghost" style="padding:5px 12px;margin-left:8px"
          href="/admin/export.csv">Exporter en CSV</a>
@@ -1525,5 +1541,28 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
             <th>Méthode</th><th>État</th><th>Code</th><th>Date</th></tr>
         ${rows || `<tr><td colspan="8" style="color:var(--ink-soft)">Aucune commande.</td></tr>`}
       </table>
+    </div>
+
+    <div class="card" style="border-color:var(--err)">
+      <h2 style="margin-top:0;color:var(--err)">Repartir à zéro</h2>
+      <p class="sub" style="margin:0 0 12px">Efface <strong>tout</strong>
+      l'historique des ventes en ligne. À faire une fois, quand les essais
+      sont finis et que les vrais chiffres commencent. Rien ne se récupère
+      ensuite : <a href="/admin/backup.json">téléchargez la sauvegarde</a>
+      d'abord.</p>
+      <form class="inline" method="post" action="/admin/reset"
+            data-confirm="Effacer définitivement l'historique des ventes ?">
+        <label style="flex-direction:row;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:13px">
+          <input type="checkbox" name="vouchers" value="1" style="width:auto">
+          Supprimer aussi tous les vouchers et les retirer des routeurs
+        </label>
+        <label>Tapez EFFACER
+          <input name="confirm" placeholder="EFFACER" size="10" required></label>
+        <button class="danger" type="submit">Effacer</button>
+      </form>
+      <p class="sub" style="margin:12px 0 0">Sans la case cochée, les codes
+      restent en place et continuent de fonctionner ; seul l'historique des
+      paiements disparaît. Avec la case, les codes sont aussi supprimés des
+      routeurs : les billets déjà imprimés cessent de marcher.</p>
     </div>`, { active: "orders", side: menuGeneral("g-ventes") }));
 });

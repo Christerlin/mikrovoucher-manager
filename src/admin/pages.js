@@ -391,8 +391,15 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
       </form>
     </div>`;
 
+  // Retour d'action (depot de fichiers...) : sans lui, un fichier refuse
+  // disparaissait sans un mot et la page semblait n'avoir rien fait.
+  const msg = String(req.query.msg || "").slice(0, 400);
+  const bandeau = msg
+    ? `<div class="card" style="border-color:var(--accent)">${esc(msg)}</div>` : "";
+
   res.type("html").send(layout(router.name, `
     <h1>${esc(router.name)} <span id="statePill">${onlinePill(router.last_seen)}</span></h1>
+    ${bandeau}
     <p class="sub">Slug : <span class="mono">${esc(router.slug)}</span>
       &middot; Portail : <span class="mono">${esc(router.portal_url || "non défini")}</span></p>
     ${infoCard}
@@ -751,17 +758,42 @@ adminRouter.post("/admin/routers/:id/files", requireAdmin,
     const id = Number(req.params.id);
     const router = await getRouter(id);
     if (!router) return res.redirect("/admin/routers");
+
+    const retour = (msg) =>
+      res.redirect(`/admin/routers/${id}?msg=` + encodeURIComponent(msg));
+
     // Le sous-dossier vient d'un champ libre : il passe par la meme validation
     // que le nom de fichier, sinon "../../" y suffirait pour sortir du portail.
-    const prefixe = cheminPortailValide(String(req.body.prefixe || "") || "x");
-    const dossier = req.body.prefixe ? (prefixe ? prefixe + "/" : null) : "";
-    if (dossier === null) return res.redirect(`/admin/routers/${id}`);
-    for (const f of req.files || []) {
-      const chemin = cheminPortailValide(dossier + f.originalname);
-      if (!chemin) continue;                       // nom refuse : on l'ignore
-      await upsertPortalFile(id, chemin, f.buffer);
+    const brut = String(req.body.prefixe || "").trim().replace(/^\/+|\/+$/g, "");
+    let dossier = "";
+    if (brut) {
+      const ok = cheminPortailValide(brut);
+      if (!ok) return retour(`Sous-dossier refusé : « ${brut} »`);
+      dossier = ok + "/";
     }
-    res.redirect(`/admin/routers/${id}`);
+
+    const recus = req.files || [];
+    if (recus.length === 0) {
+      return retour("Aucun fichier reçu. Choisissez au moins un fichier.");
+    }
+
+    const pris = [], refuses = [];
+    for (const f of recus) {
+      // Certains navigateurs envoient un chemin complet : on ne garde que le
+      // nom, sinon un "/Users/…/login.html" serait refuse sans raison lisible.
+      const nom = String(f.originalname || "").split(/[\\/]/).pop();
+      const chemin = cheminPortailValide(dossier + nom);
+      if (!chemin) { refuses.push(nom); continue; }
+      await upsertPortalFile(id, chemin, f.buffer);
+      pris.push(chemin);
+    }
+
+    if (pris.length === 0) {
+      return retour(`Aucun fichier accepté (nom refusé) : ${refuses.join(", ")}`);
+    }
+    return retour(
+      `${pris.length} fichier(s) déposé(s) : ${pris.join(", ")}` +
+      (refuses.length ? ` — refusé(s) : ${refuses.join(", ")}` : ""));
   });
 
 adminRouter.post("/admin/routers/:id/files/:fid/delete", requireAdmin, async (req, res) => {

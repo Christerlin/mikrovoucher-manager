@@ -270,7 +270,14 @@ export async function listSessions(routerId) {
   // ainsi au forfait acheté (durée, nombre d'appareils, prix).
   const { rows } = await pool.query(
     `SELECT s.*, p.label AS plan_label, p.uptime AS plan_uptime,
-            p.shared_users, v.source AS voucher_source
+            p.shared_users, v.source AS voucher_source,
+            -- Echeance calendaire : le routeur, lui, ne renvoie que le temps
+            -- de CONNEXION restant. Les deux different des qu'un client se
+            -- deconnecte, et c'est la plus proche qui coupe l'acces.
+            CASE WHEN v.used_at IS NOT NULL AND p.validity_seconds > 0
+                 THEN EXTRACT(EPOCH FROM (v.used_at
+                        + (p.validity_seconds || ' seconds')::interval - now()))::int
+            END AS validity_left
        FROM sessions s
        LEFT JOIN vouchers v ON v.router_id = s.router_id AND v.code = s.username
        LEFT JOIN plans p ON p.id = v.plan_id

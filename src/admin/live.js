@@ -88,7 +88,13 @@
     }
     tr.appendChild(plan);
 
-    var left = toSeconds(s.timeLeft);
+    // Deux horloges : le temps de CONNEXION que renvoie le routeur, et la
+    // validite calendaire que tient le manager. Elles divergent des qu'un
+    // client se deconnecte ; c'est la plus proche qui coupera l'acces, et
+    // c'est elle que le portail affiche au client.
+    var routeur = toSeconds(s.timeLeft);
+    var cal = (typeof s.validityLeft === "number") ? Math.max(0, s.validityLeft) : null;
+    var left = (cal === null) ? routeur : (routeur ? Math.min(routeur, cal) : cal);
     var tl = document.createElement("td");
     tl.className = "mono";
     if (left) {

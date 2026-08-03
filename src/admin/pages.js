@@ -358,14 +358,35 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
     if (n >= 1024) return Math.round(n / 1024) + " Ko";
     return n + " o";
   };
+  // Le routeur decompte le temps de connexion, le manager la validite
+  // calendaire : afficher l'un des deux ferait dire au dashboard autre chose
+  // qu'au portail. On retient la plus proche, celle qui coupera l'acces.
+  const resteReel = (s) => {
+    const routeur = s.time_left ? durationToSeconds(s.time_left) : null;
+    const cal = s.validity_left == null ? null : Math.max(0, s.validity_left);
+    if (routeur == null) return cal;
+    if (cal == null) return routeur;
+    return Math.min(routeur, cal);
+  };
+  // Meme forme que live.js, qui reprend la main a la premiere seconde :
+  // sinon la valeur change d'apparence sous les yeux au premier rafraichissement.
+  const formatReste = (sec) => {
+    if (sec == null) return null;
+    const j = Math.floor(sec / 86400); sec %= 86400;
+    const h = Math.floor(sec / 3600); sec %= 3600;
+    const m = Math.floor(sec / 60), r = sec % 60;
+    const p = (n) => (n < 10 ? "0" : "") + n;
+    return (j > 0 ? j + "j " : "") + p(h) + ":" + p(m) + ":" + p(r);
+  };
+
   const sessionRows = sessions.map((s) => `
     <tr>
       <td class="mono"><strong>${esc(s.username)}</strong></td>
       <td>${s.plan_label
         ? `${esc(s.plan_label)}${s.shared_users > 1 ? ` <span class="pill wait">${s.shared_users} app.</span>` : ""}`
         : `<span style="color:var(--ink-soft)">hors manager</span>`}</td>
-      <td class="mono">${s.time_left
-        ? `<strong data-left="${durationToSeconds(s.time_left)}">${esc(s.time_left)}</strong>`
+      <td class="mono">${resteReel(s) != null
+        ? `<strong data-left="${resteReel(s)}">${esc(formatReste(resteReel(s)))}</strong>`
         : `<span style="color:var(--ink-soft)">illimité</span>`}</td>
       <td class="mono">${esc(s.address || "–")}</td>
       <td class="mono" style="font-size:12px">${esc(s.mac || "–")}</td>
@@ -581,7 +602,8 @@ adminRouter.get("/admin/api/routers/:id/live", requireAdmin, async (req, res) =>
       sessions: sessions.map((s) => ({
         username: s.username, address: s.address, mac: s.mac, uptime: s.uptime,
         bytesIn: Number(s.bytes_in), bytesOut: Number(s.bytes_out),
-        timeLeft: s.time_left, planLabel: s.plan_label, devices: s.shared_users,
+        timeLeft: s.time_left, validityLeft: s.validity_left,
+        planLabel: s.plan_label, devices: s.shared_users,
       })),
     });
   } catch (err) {

@@ -56,6 +56,10 @@ export async function initDb() {
     -- Dossier du portail sur le routeur. Varie selon le modele (avec ou sans
     -- flash) : verifiable par /file print sur le routeur concerne.
     ALTER TABLE routers ADD COLUMN IF NOT EXISTS portal_dir TEXT NOT NULL DEFAULT 'hotspot';
+    -- Essai gratuit : duree offerte / delai avant qu'un appareil y ait droit
+    -- a nouveau. Regle depuis le dashboard, applique au routeur par l'agent.
+    ALTER TABLE routers ADD COLUMN IF NOT EXISTS trial_limit TEXT NOT NULL DEFAULT '5m';
+    ALTER TABLE routers ADD COLUMN IF NOT EXISTS trial_reset TEXT NOT NULL DEFAULT '1d';
 
     -- Sessions hotspot actives, remplacées à chaque rapport de l'agent.
     CREATE TABLE IF NOT EXISTS sessions (
@@ -119,6 +123,26 @@ export async function initDb() {
       pushed_at   TIMESTAMPTZ,
       updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
       UNIQUE (router_id, path)
+    );
+
+    -- Sponsors : commerces du quartier qui paient une place sur le portail.
+    -- Ce qui se vend ici n'est pas de l'impression au mille, c'est l'attention
+    -- des gens du coin ; d'ou des dates de contrat et des compteurs, qui
+    -- servent a renouveler.
+    CREATE TABLE IF NOT EXISTS sponsors (
+      id          SERIAL PRIMARY KEY,
+      router_id   INT NOT NULL REFERENCES routers(id) ON DELETE CASCADE,
+      name        TEXT NOT NULL,
+      baseline    TEXT NOT NULL DEFAULT '',
+      contact     TEXT NOT NULL DEFAULT '',   -- telephone ou lien
+      image_path  TEXT NOT NULL DEFAULT '',   -- chemin dans le portail
+      placement   TEXT NOT NULL DEFAULT 'login', -- login | trial | both
+      starts_on   DATE,
+      ends_on     DATE,
+      active      BOOLEAN NOT NULL DEFAULT true,
+      views       BIGINT NOT NULL DEFAULT 0,
+      clicks      BIGINT NOT NULL DEFAULT 0,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
     CREATE TABLE IF NOT EXISTS vouchers (
@@ -302,6 +326,19 @@ export function cheminPortailValide(chemin) {
   return p;
 }
 
+// Duree RouterOS : un nombre suivi de son unite (30m, 2h, 1d). Valide ici
+// parce que la valeur part telle quelle dans une commande du routeur.
+export function dureeRouterOsValide(v) {
+  const t = String(v || "").trim().toLowerCase();
+  return /^[1-9][0-9]{0,3}[smhdw]$/.test(t) ? t : null;
+}
+
+export async function setTrial(routerId, limite, reset) {
+  await pool.query(
+    `UPDATE routers SET trial_limit = $2, trial_reset = $3 WHERE id = $1`,
+    [routerId, limite, reset]);
+}
+
 export async function setPortalDir(routerId, dir) {
   await pool.query(`UPDATE routers SET portal_dir = $2 WHERE id = $1`, [routerId, dir]);
 }
@@ -318,6 +355,70 @@ export async function echeanceVoucher(routerId, code) {
         AND v.used_at IS NOT NULL AND v.expired_at IS NULL
         AND p.validity_seconds > 0`, [routerId, code]);
   return rows[0] ? rows[0].restant : null;
+}
+
+// --------------------------------------------------------- sponsors ----
+
+export async function listSponsors(routerId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM sponsors WHERE router_id = $1 ORDER BY active DESC, name`,
+    [routerId]);
+  return rows;
+}
+
+// Sponsors visibles maintenant : actifs et dans leur fenetre de contrat.
+// Un contrat echu s'eteint tout seul — sans cela on afficherait gratuitement
+// un commerce qui ne paie plus.
+export async function sponsorsEnCours(routerId, placement) {
+  const { rows } = await pool.query(
+    `SELECT id, name, baseline, contact, image_path, placement
+       FROM sponsors
+      WHERE router_id = $1 AND active
+        AND (starts_on IS NULL OR starts_on <= current_date)
+        AND (ends_on   IS NULL OR ends_on   >= current_date)
+        AND placement IN ($2, 'both')
+      ORDER BY name`, [routerId, placement]);
+  return rows;
+}
+
+export async function createSponsor(routerId, s) {
+  const { rows } = await pool.query(
+    `INSERT INTO sponsors (router_id, name, baseline, contact, placement, starts_on, ends_on)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [routerId, s.name, s.baseline || "", s.contact || "", s.placement || "login",
+     s.startsOn || null, s.endsOn || null]);
+  return rows[0];
+}
+
+export async function setSponsorImage(routerId, id, chemin) {
+  await pool.query(`UPDATE sponsors SET image_path = $3 WHERE id = $2 AND router_id = $1`,
+    [routerId, id, chemin]);
+}
+
+export async function toggleSponsor(routerId, id, actif) {
+  await pool.query(`UPDATE sponsors SET active = $3 WHERE id = $2 AND router_id = $1`,
+    [routerId, id, actif]);
+}
+
+export async function deleteSponsor(routerId, id) {
+  const { rows } = await pool.query(
+    `DELETE FROM sponsors WHERE id = $2 AND router_id = $1 RETURNING image_path`,
+    [routerId, id]);
+  return rows[0] || null;
+}
+
+// Compteurs. Une seule requete, sans lecture prealable : ces increments
+// arrivent a chaque affichage de page et ne doivent rien couter.
+export async function compterVues(ids) {
+  if (ids.length === 0) return;
+  await pool.query(`UPDATE sponsors SET views = views + 1 WHERE id = ANY($1)`, [ids]);
+}
+
+export async function compterClic(routerId, id) {
+  const { rowCount } = await pool.query(
+    `UPDATE sponsors SET clicks = clicks + 1 WHERE id = $2 AND router_id = $1`,
+    [routerId, id]);
+  return rowCount === 1;
 }
 
 export async function upsertPortalFile(routerId, path, buffer) {

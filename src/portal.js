@@ -94,6 +94,58 @@ portalRouter.get("/api/portal/:slug/expiry/:code", rateLimit(60), async (req, re
   }
 });
 
+// 0b-bis) Duree de l'essai, pour que la page de connexion l'annonce sans
+// qu'on ait a rouvrir config.js sur le routeur a chaque changement.
+portalRouter.get("/api/portal/:slug/trial", rateLimit(120), async (req, res) => {
+  try {
+    const router = await getRouterBySlug(String(req.params.slug));
+    if (!router) return res.status(404).json({ error: "Inconnu." });
+    res.json({ limite: router.trial_limit || "", reset: router.trial_reset || "" });
+  } catch (err) {
+    console.error("[trial]", err.message);
+    res.status(502).json({ error: "Indisponible." });
+  }
+});
+
+// 0c) Sponsors visibles maintenant. La vue est comptee ici : une requete =
+// un affichage, plutot qu'un second aller-retour depuis la page.
+portalRouter.get("/api/portal/:slug/sponsors", rateLimit(120), async (req, res) => {
+  try {
+    const router = await getRouterBySlug(String(req.params.slug));
+    if (!router) return res.status(404).json({ error: "Inconnu." });
+    const placement = ["login", "trial"].includes(String(req.query.ou))
+      ? String(req.query.ou) : "login";
+    const { sponsorsEnCours, compterVues } = await import("./db.js");
+    const rows = await sponsorsEnCours(router.id, placement);
+    if (rows.length > 0) {
+      // Sans await : le client n'a pas a attendre un compteur.
+      compterVues(rows.map((r) => r.id)).catch((e) => console.error("[vues]", e.message));
+    }
+    res.json(rows.map((r) => ({
+      id: r.id, nom: r.name, accroche: r.baseline,
+      contact: r.contact, image: r.image_path, ou: r.placement,
+    })));
+  } catch (err) {
+    console.error("[sponsors]", err.message);
+    res.status(502).json({ error: "Indisponible." });
+  }
+});
+
+// 0d) Clic sur un sponsor. Sans reponse utile : c'est un compteur.
+portalRouter.get("/api/portal/:slug/sponsors/:id/clic", rateLimit(120), async (req, res) => {
+  try {
+    const router = await getRouterBySlug(String(req.params.slug));
+    const id = Number(req.params.id);
+    if (!router || !Number.isInteger(id)) return res.status(204).end();
+    const { compterClic } = await import("./db.js");
+    await compterClic(router.id, id);
+    res.status(204).end();
+  } catch (err) {
+    console.error("[clic]", err.message);
+    res.status(204).end();
+  }
+});
+
 // 1) Créer un paiement.
 portalRouter.post("/api/checkout", rateLimit(12), async (req, res) => {
   try {

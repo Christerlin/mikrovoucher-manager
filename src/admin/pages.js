@@ -12,6 +12,8 @@ import {
   salesByDay, salesByPlan, salesByMethod, allSales, dumpAll,
   cheminPortailValide, upsertPortalFile, listPortalFiles,
   deletePortalFile, setPortalDir,
+  listSponsors, createSponsor, setSponsorImage, toggleSponsor, deleteSponsor,
+  dureeRouterOsValide, setTrial,
 } from "../db.js";
 import { generateRouterToken, generateVoucherCode, durationToSeconds } from "../codes.js";
 import { layout, esc } from "./html.js";
@@ -213,6 +215,17 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
           :do { /ip hotspot cookie remove [find user=$code]; } on-error={}
           :do { /ip hotspot user remove [find name=$code]; } on-error={}
         }
+        # Reglage de l'essai gratuit depuis le dashboard. $code porte la
+        # duree offerte, $up le delai de remise a zero, $prof le profil des
+        # utilisateurs d'essai. Sans erreur si l'essai n'est pas encore
+        # active dans login-by : c'est l'import du .rsc qui l'allume.
+        :if ($action = "trial") do={
+          :do {
+            /ip hotspot profile set [find name!="default"] \\
+              trial-uptime-limit=$code trial-uptime-reset=$up \\
+              trial-user-profile=$prof;
+          } on-error={}
+        }
         # Effacement d'un fichier du portail. Meme verrou de chemin que
         # l'envoi : $cmt est prefixe du dossier du hotspot et valide cote
         # serveur, on ne peut donc pas effacer ailleurs.
@@ -315,6 +328,7 @@ function menuRouteur(router, actif) {
       [b, "Vue d'ensemble", "vue"],
       [`${b}/plans`, "Forfaits", "plans"],
       [`${b}/vouchers`, "Vouchers", "vouchers"],
+      [`${b}/sponsors`, "Sponsors", "sponsors"],
       [`${b}/files`, "Fichiers du portail", "files"],
       [`${b}/agent`, "Script agent", "agent"],
     ],
@@ -469,6 +483,89 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
           data-confirm="Supprimer ce routeur et tout son historique ?">
       <button class="danger">Supprimer ce routeur</button>
     </form>`, { active: "routers", side: menuRouteur(router, "vue") }));
+});
+
+// Page dediee : commerces qui paient une place sur le portail.
+adminRouter.get("/admin/routers/:id/sponsors", requireAdmin, async (req, res) => {
+  const router = await getRouter(Number(req.params.id));
+  if (!router) return res.redirect("/admin/routers");
+  const sponsors = await listSponsors(router.id);
+
+  const place = { login: "Page de connexion", trial: "Essai gratuit", both: "Les deux" };
+  const jour = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "–");
+  // Un contrat echu n'affiche plus rien : on le dit ici, sinon on croit que
+  // le sponsor est encore en ligne parce que sa ligne est "active".
+  const echu = (s) => s.ends_on && new Date(s.ends_on) < new Date(new Date().toDateString());
+
+  const rows = sponsors.map((s) => `
+    <tr>
+      <td>
+        <strong>${esc(s.name)}</strong>
+        ${s.baseline ? `<div style="font-size:12px;color:var(--ink-soft)">${esc(s.baseline)}</div>` : ""}
+        ${s.image_path ? `<div style="font-size:11px;color:var(--ink-soft)" class="mono">${esc(s.image_path)}</div>` : ""}
+      </td>
+      <td>${esc(place[s.placement] || s.placement)}</td>
+      <td style="font-size:12px">${jour(s.starts_on)} &rarr; ${jour(s.ends_on)}</td>
+      <td class="num">${s.views}</td>
+      <td class="num">${s.clicks}</td>
+      <td>${!s.active ? `<span class="pill off">arrêté</span>`
+            : echu(s) ? `<span class="pill wait">contrat fini</span>`
+            : `<span class="pill ok">en ligne</span>`}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <form method="post" style="display:inline"
+              action="/admin/routers/${router.id}/sponsors/${s.id}/toggle">
+          <input type="hidden" name="actif" value="${s.active ? "0" : "1"}">
+          <button class="btn ghost" type="submit">${s.active ? "Arrêter" : "Remettre"}</button>
+        </form>
+        <form method="post" style="display:inline"
+              action="/admin/routers/${router.id}/sponsors/${s.id}/delete"
+              data-confirm="Supprimer ${esc(s.name)} ? Son image sera retirée du routeur.">
+          <button class="danger" type="submit">Supprimer</button>
+        </form>
+      </td>
+    </tr>`).join("");
+
+  res.type("html").send(layout(`Sponsors : ${router.name}`, `
+    <h1>Sponsors</h1>
+    <p class="sub">${esc(router.name)}</p>
+    ${bandeauMsg(req)}
+
+    <div class="card">
+      <table>
+        <tr><th>Commerce</th><th>Emplacement</th><th>Contrat</th>
+            <th class="num">Vues</th><th class="num">Clics</th><th>État</th><th></th></tr>
+        ${rows || `<tr><td colspan="7" style="color:var(--ink-soft)">Aucun sponsor.</td></tr>`}
+      </table>
+      <p class="sub" style="margin:12px 0 0">« Vues » compte les affichages du
+      portail, « Clics » les fois où quelqu'un a touché le contact. Ce sont ces
+      deux chiffres qui font renouveler un contrat.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Ajouter un sponsor</h2>
+      <form method="post" action="/admin/routers/${router.id}/sponsors"
+            enctype="multipart/form-data" class="inline">
+        <label>Commerce <input name="name" required placeholder="Boutique Marie"></label>
+        <label>Accroche <input name="baseline" size="28" placeholder="Produits frais, en face de l'église"></label>
+        <label>Contact <input name="contact" size="14" placeholder="509XXXXXXXX"></label>
+        <label>Emplacement
+          <select name="placement">
+            <option value="login">Page de connexion</option>
+            <option value="trial">Essai gratuit</option>
+            <option value="both">Les deux</option>
+          </select></label>
+        <label>Du <input type="date" name="starts_on"></label>
+        <label>Au <input type="date" name="ends_on"></label>
+        <label>Logo <input type="file" name="image" accept="image/png,image/jpeg,image/webp"></label>
+        <button type="submit">Ajouter</button>
+      </form>
+      <p class="sub" style="margin:12px 0 0">Le logo est déposé dans les fichiers
+      du portail et envoyé au routeur automatiquement : il s'affiche donc même
+      avant que le client soit connecté. PNG, JPEG ou WebP, 2 Mo maximum.
+      « Essai gratuit » écrit « offertes par ... » sous le bouton d'essai —
+      c'est la place qui se vend le mieux : le client reçoit un cadeau.</p>
+    </div>`, { active: "routers", side: menuRouteur(router, "sponsors") }));
+});
 
 // Page dediee : fichiers du portail captif.
 adminRouter.get("/admin/routers/:id/files", requireAdmin, async (req, res) => {
@@ -582,8 +679,6 @@ adminRouter.get("/admin/routers/:id/agent", requireAdmin, async (req, res) => {
 `, { active: "routers", side: menuRouteur(router, "agent") }));
 });
 
-});
-
 // Script client de la fiche routeur, servi comme fichier statique.
 adminRouter.get("/admin/live.js", requireAdmin, (req, res) => {
   res.type("application/javascript").sendFile(
@@ -657,6 +752,7 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
   res.type("html").send(layout(`Forfaits : ${router.name}`, `
     <h1>Forfaits</h1>
     <p class="sub">${esc(router.name)}</p>
+    ${bandeauMsg(req)}
     <div class="card" style="display:flex;gap:10px;flex-wrap:wrap">
       <a class="btn ghost" href="/admin/routers/${router.id}">Fiche routeur</a>
       <a class="btn ghost" href="/admin/routers/${router.id}/vouchers">Vouchers</a>
@@ -685,6 +781,27 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
       <p class="sub" style="margin:12px 0 0">Un code existant est mis à jour.
       « Appareils » = nombre d'appareils pouvant utiliser le même voucher en même temps.
       Le débit limite chaque client de ce forfait ; laissez vide ou 0 pour ne pas limiter.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Essai gratuit</h2>
+      <p class="sub" style="margin:0 0 12px">Ce que reçoit un appareil qui n'a
+      jamais payé. C'est de la publicité, pas un contrôle d'accès : un
+      téléphone qui change d'adresse Wi-Fi privée repart à zéro. Court, il
+      montre que le réseau marche sans valoir la peine d'être contourné.</p>
+      <form class="inline" method="post" action="/admin/routers/${router.id}/trial">
+        <label>Durée offerte
+          <input name="limite" value="${esc(router.trial_limit || "5m")}"
+                 pattern="[1-9][0-9]{0,3}[smhdw]" size="6" required></label>
+        <label>À nouveau après
+          <input name="reset" value="${esc(router.trial_reset || "1d")}"
+                 pattern="[1-9][0-9]{0,3}[smhdw]" size="6" required></label>
+        <button type="submit">Appliquer au routeur</button>
+      </form>
+      <p class="sub" style="margin:12px 0 0">Format RouterOS :
+      <span class="mono">30m</span>, <span class="mono">2h</span>,
+      <span class="mono">1d</span>. « À nouveau après » compte depuis le début
+      de l'essai. La page de connexion annonce la durée toute seule.</p>
     </div>`, { active: "routers", side: menuRouteur(router, "plans") }));
 });
 
@@ -823,6 +940,94 @@ adminRouter.post("/admin/routers/:id/kick", requireAdmin, async (req, res) => {
 });
 
 // Téléchargement du script agent, prêt à glisser dans Files puis /import.
+// Envoie (ou renvoie) un fichier du portail au routeur.
+async function pousserFichier(routerId, portalDir, fichier) {
+  const dossier = cheminPortailValide(portalDir || "hotspot");
+  if (!dossier) return;
+  await queueCommand(routerId, "fetch", {
+    code: String(fichier.id), fileId: fichier.id,
+    comment: `${dossier}/${fichier.path}`,
+  });
+}
+
+adminRouter.post("/admin/routers/:id/trial", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const router = await getRouter(id);
+  if (!router) return res.redirect("/admin/routers");
+  const retour = (m) => res.redirect(`/admin/routers/${id}/plans?msg=` + encodeURIComponent(m));
+
+  const limite = dureeRouterOsValide(req.body.limite);
+  const reset = dureeRouterOsValide(req.body.reset);
+  if (!limite || !reset) return retour("Durée invalide. Exemples : 30m, 2h, 1d.");
+
+  await setTrial(id, limite, reset);
+  // $code = duree offerte, $up = remise a zero, $profile = profil d'essai.
+  await queueCommand(id, "trial", { code: limite, uptime: reset, profile: "essai" });
+  return retour(`Essai réglé sur ${limite} par ${reset}. Envoyé au routeur.`);
+});
+
+// ------------------------------------------------------------ sponsors ----
+adminRouter.post("/admin/routers/:id/sponsors", requireAdmin,
+  upload.single("image"), async (req, res) => {
+    const id = Number(req.params.id);
+    const router = await getRouter(id);
+    if (!router) return res.redirect("/admin/routers");
+    const retour = (m) => res.redirect(`/admin/routers/${id}/sponsors?msg=` + encodeURIComponent(m));
+
+    const nom = String(req.body.name || "").trim();
+    if (!nom) return retour("Le nom du commerce est obligatoire.");
+    const placement = ["login", "trial", "both"].includes(req.body.placement)
+      ? req.body.placement : "login";
+
+    const sponsor = await createSponsor(id, {
+      name: nom.slice(0, 80),
+      baseline: String(req.body.baseline || "").trim().slice(0, 120),
+      contact: String(req.body.contact || "").trim().slice(0, 60),
+      placement,
+      startsOn: req.body.starts_on || null,
+      endsOn: req.body.ends_on || null,
+    });
+
+    if (req.file) {
+      // Extension imposee : un SVG s'execute dans la page du portail, et le
+      // reste ne s'afficherait pas.
+      const types = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
+      const ext = types[req.file.mimetype];
+      if (!ext) return retour(`${nom} ajouté, mais le logo a été refusé (PNG, JPEG ou WebP seulement).`);
+      const chemin = `img/sponsors/${sponsor.id}.${ext}`;
+      const f = await upsertPortalFile(id, chemin, req.file.buffer);
+      await setSponsorImage(id, sponsor.id, chemin);
+      await pousserFichier(id, router.portal_dir, f);
+      return retour(`${nom} ajouté. Logo envoyé au routeur.`);
+    }
+    return retour(`${nom} ajouté.`);
+  });
+
+adminRouter.post("/admin/routers/:id/sponsors/:sid/toggle", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  await toggleSponsor(id, Number(req.params.sid), req.body.actif === "1");
+  res.redirect(`/admin/routers/${id}/sponsors`);
+});
+
+adminRouter.post("/admin/routers/:id/sponsors/:sid/delete", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const router = await getRouter(id);
+  if (!router) return res.redirect("/admin/routers");
+  const supprime = await deleteSponsor(id, Number(req.params.sid));
+  // Le logo doit partir du routeur aussi : sinon il resterait un fichier
+  // orphelin sur le flash, invisible depuis le dashboard.
+  if (supprime && supprime.image_path) {
+    const fichiers = await listPortalFiles(id);
+    const f = fichiers.find((x) => x.path === supprime.image_path);
+    const dossier = cheminPortailValide(router.portal_dir || "hotspot");
+    if (f && dossier) {
+      await queueCommand(id, "rmfile", { comment: `${dossier}/${f.path}` });
+      await deletePortalFile(id, f.id);
+    }
+  }
+  res.redirect(`/admin/routers/${id}/sponsors?msg=` + encodeURIComponent("Sponsor supprimé."));
+});
+
 // --------------------------------------------- fichiers du portail ----
 adminRouter.post("/admin/routers/:id/files", requireAdmin,
   upload.array("fichiers", 20), async (req, res) => {

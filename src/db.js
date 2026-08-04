@@ -161,6 +161,10 @@ export async function initDb() {
       used_bytes  BIGINT DEFAULT 0,
       UNIQUE (router_id, code)
     );
+    -- Recharges cumulees sur ce code : le client prolonge son acces sans
+    -- changer de code ni se deconnecter. S'ajoute a la duree du forfait,
+    -- pour le compteur du routeur comme pour l'echeance calendaire.
+    ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS extra_seconds INT NOT NULL DEFAULT 0;
     ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ;
     ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_uptime TEXT;
     ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS used_bytes BIGINT DEFAULT 0;
@@ -183,6 +187,9 @@ export async function initDb() {
       paid_at             TIMESTAMPTZ,
       delivered_at        TIMESTAMPTZ
     );
+    -- Apres la creation de la table, sinon un demarrage sur base neuve
+    -- echoue : la colonne serait ajoutee a une table qui n'existe pas encore.
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS recharge_code TEXT;
     CREATE INDEX IF NOT EXISTS orders_status_idx ON orders (status);
     CREATE INDEX IF NOT EXISTS orders_handoff_idx
       ON orders (handoff_hash) WHERE handoff_hash IS NOT NULL;
@@ -215,7 +222,7 @@ export async function vouchersDejaEchus() {
       FROM vouchers v JOIN plans p ON p.id = v.plan_id
      WHERE v.used_at IS NOT NULL AND v.expired_at IS NULL
        AND p.validity_seconds > 0
-       AND v.used_at + (p.validity_seconds || ' seconds')::interval < now()`);
+       AND v.used_at + ((p.validity_seconds + v.extra_seconds) || ' seconds')::interval < now()`);
   return rows[0].n;
 }
 
@@ -300,7 +307,8 @@ export async function listSessions(routerId) {
             -- deconnecte, et c'est la plus proche qui coupe l'acces.
             CASE WHEN v.used_at IS NOT NULL AND p.validity_seconds > 0
                  THEN EXTRACT(EPOCH FROM (v.used_at
-                        + (p.validity_seconds || ' seconds')::interval - now()))::int
+                        + ((p.validity_seconds + v.extra_seconds) || ' seconds')::interval
+                        - now()))::int
             END AS validity_left
        FROM sessions s
        LEFT JOIN vouchers v ON v.router_id = s.router_id AND v.code = s.username
@@ -349,7 +357,8 @@ export async function setPortalDir(routerId, dir) {
 export async function echeanceVoucher(routerId, code) {
   const { rows } = await pool.query(
     `SELECT EXTRACT(EPOCH FROM (v.used_at
-              + (p.validity_seconds || ' seconds')::interval - now()))::int AS restant
+              + ((p.validity_seconds + v.extra_seconds) || ' seconds')::interval
+              - now()))::int AS restant
        FROM vouchers v JOIN plans p ON p.id = v.plan_id
       WHERE v.router_id = $1 AND v.code = $2
         AND v.used_at IS NOT NULL AND v.expired_at IS NULL
@@ -419,6 +428,67 @@ export async function compterClic(routerId, id) {
     `UPDATE sponsors SET clicks = clicks + 1 WHERE id = $2 AND router_id = $1`,
     [routerId, id]);
   return rowCount === 1;
+}
+
+// ----------------------------------------------------- recharges ----
+
+export async function getVoucherByCode(routerId, code) {
+  const { rows } = await pool.query(
+    `SELECT v.*, p.uptime AS plan_uptime, p.code AS plan_code
+       FROM vouchers v LEFT JOIN plans p ON p.id = v.plan_id
+      WHERE v.router_id = $1 AND v.code = $2`, [routerId, code]);
+  return rows[0] || null;
+}
+
+// Prolonge un code deja en service : le compteur du routeur ET l'echeance
+// calendaire avancent d'autant. Le client garde son code et sa session ; se
+// deconnecter pour ressaisir un nouveau code fait perdre la moitie des
+// acheteurs au moment ou ils sont decides.
+export async function prolongerVoucher(routerId, code, secondes) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `UPDATE vouchers v SET extra_seconds = extra_seconds + $3
+        WHERE v.router_id = $1 AND v.code = $2 AND v.expired_at IS NULL
+        RETURNING v.id, v.plan_id, v.extra_seconds`, [routerId, code, secondes]);
+    if (rows.length === 0) { await client.query("ROLLBACK"); return null; }
+    const v = rows[0];
+
+    const { rows: pl } = await client.query(
+      `SELECT uptime FROM plans WHERE id = $1`, [v.plan_id]);
+    // Nouveau plafond de temps de connexion : celui du forfait d'origine,
+    // augmente de tout ce qui a ete recharge depuis.
+    const base = pl[0] ? durationToSeconds(pl[0].uptime) : 0;
+    const total = base + v.extra_seconds;
+
+    const cmd = await client.query(
+      `INSERT INTO commands (router_id, action, payload)
+       VALUES ($1,'extend',$2) RETURNING id`,
+      [routerId, { code, uptime: secondesEnDuree(total) }]);
+    // Le meme accuse de reception qui confirme la commande fera passer la
+    // vente en DELIVERED (voir ackCommand).
+    await client.query(`UPDATE vouchers SET command_id = $2 WHERE id = $1`,
+      [v.id, cmd.rows[0].id]);
+    await client.query("COMMIT");
+    return { voucherId: v.id, total };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Duree RouterOS a partir de secondes : "1d2h30m" plutot qu'un entier nu,
+// dont l'interpretation depend du champ vise.
+export function secondesEnDuree(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const j = Math.floor(sec / 86400); sec %= 86400;
+  const h = Math.floor(sec / 3600); sec %= 3600;
+  const m = Math.floor(sec / 60); const s = sec % 60;
+  return [[j, "d"], [h, "h"], [m, "m"], [s, "s"]]
+    .filter(([n]) => n > 0).map(([n, u]) => n + u).join("") || "0s";
 }
 
 // -------------------------------------------------- restauration ----
@@ -649,7 +719,7 @@ export async function expireUsedVouchers() {
         FROM vouchers v JOIN plans p ON p.id = v.plan_id
        WHERE v.used_at IS NOT NULL AND v.expired_at IS NULL
          AND p.validity_seconds > 0
-         AND v.used_at + (p.validity_seconds || ' seconds')::interval < now()
+         AND v.used_at + ((p.validity_seconds + v.extra_seconds) || ' seconds')::interval < now()
        FOR UPDATE OF v SKIP LOCKED`);
     for (const v of rows) {
       await client.query(
@@ -847,12 +917,13 @@ export async function resyncVouchers(routerId) {
 }
 
 // ----------------------------------------------------------------- orders --
-export async function createOrder({ reference, routerId, planId, amountHtg, method, claimHash, retrievalPin, transactionId }) {
+export async function createOrder({ reference, routerId, planId, amountHtg, method, claimHash, retrievalPin, transactionId, rechargeCode = null }) {
   await pool.query(
     `INSERT INTO orders (reference, router_id, plan_id, amount_htg, method,
-                         claim_hash, retrieval_pin, paym_transaction_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [reference, routerId, planId, amountHtg, method, claimHash, retrievalPin, transactionId]);
+                         claim_hash, retrieval_pin, paym_transaction_id, recharge_code)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [reference, routerId, planId, amountHtg, method, claimHash, retrievalPin,
+     transactionId, rechargeCode]);
 }
 export async function getOrder(reference) {
   const { rows } = await pool.query(`SELECT * FROM orders WHERE reference = $1`, [reference]);

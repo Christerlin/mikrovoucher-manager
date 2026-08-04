@@ -246,6 +246,12 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
           :do { /ip hotspot cookie remove [find user=$code]; } on-error={}
           :do { /ip hotspot user remove [find name=$code]; } on-error={}
         }
+        # Recharge : le client a paye pour prolonger le code qu'il utilise
+        # deja. On releve son plafond de temps, sans toucher a la session en
+        # cours — il ne se deconnecte pas et ne ressaisit rien.
+        :if ($action = "extend") do={
+          :do { /ip hotspot user set [find name=$code] limit-uptime=$up; } on-error={}
+        }
         # Mise a jour de l'agent, demandee depuis le dashboard. Le fichier
         # est telecharge ici, mais l'import est confie a un declencheur a
         # part : ce script se remplace lui-meme, et se supprimer en pleine
@@ -883,7 +889,9 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
   const restant = (v) => {
     if (!v.used_at || !v.validity_seconds) return "–";
     if (v.expired_at) return "terminé";
-    const fin = new Date(v.used_at).getTime() + v.validity_seconds * 1000;
+    // Les recharges s'ajoutent a la duree du forfait.
+    const fin = new Date(v.used_at).getTime()
+      + (v.validity_seconds + (v.extra_seconds || 0)) * 1000;
     const s = Math.round((fin - Date.now()) / 1000);
     if (s <= 0) return "échu";
     const j = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);

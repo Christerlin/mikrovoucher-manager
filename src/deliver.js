@@ -6,9 +6,9 @@
 import { verifyPayment } from "./paym.js";
 import {
   claimPaid, getOrder, getPlanById, createVoucher, attachVoucherToOrder,
-  getVoucherById,
+  getVoucherById, prolongerVoucher, getVoucherByCode,
 } from "./db.js";
-import { generateVoucherCode } from "./codes.js";
+import { generateVoucherCode, durationToSeconds } from "./codes.js";
 
 // Crée le voucher lié à une commande PAID (avec reprise si un précédent
 // essai a échoué à mi-chemin). Collision de code -> nouveau tirage.
@@ -16,6 +16,19 @@ async function ensureVoucher(order) {
   if (order.voucher_id) return order.voucher_id;
   const plan = await getPlanById(order.plan_id);
   if (!plan) throw new Error(`Plan introuvable : ${order.plan_id}`);
+
+  // Recharge : on prolonge le code en service au lieu d'en creer un neuf.
+  if (order.recharge_code) {
+    const r = await prolongerVoucher(order.router_id, order.recharge_code,
+      durationToSeconds(plan.uptime));
+    if (r) {
+      await attachVoucherToOrder(order.reference, r.voucherId);
+      return r.voucherId;
+    }
+    // Le code a disparu ou expire entre le paiement et la livraison : plutot
+    // qu'une vente sans contrepartie, on delivre un code neuf.
+    console.warn(`[deliver] recharge impossible pour ${order.recharge_code}, code neuf`);
+  }
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = generateVoucherCode(8);
     try {

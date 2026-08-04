@@ -152,12 +152,29 @@ portalRouter.post("/api/checkout", rateLimit(12), async (req, res) => {
     if (!paymentsEnabled()) {
       return res.status(503).json({ error: "Paiement en ligne non configuré." });
     }
-    const { routerSlug, planId, method } = req.body || {};
+    const { routerSlug, planId, method, recharge } = req.body || {};
     if (!METHODS.has(method)) return res.status(400).json({ error: "Méthode de paiement invalide." });
     const router = await getRouterBySlug(String(routerSlug || ""));
     if (!router) return res.status(400).json({ error: "Routeur inconnu." });
     const plan = await getPlan(router.id, String(planId || ""));
     if (!plan) return res.status(400).json({ error: "Forfait invalide." });
+
+    // Recharge : on prolonge un code en service au lieu d'en creer un neuf.
+    // Verifie ici, avant tout paiement : prolonger un code inexistant ou deja
+    // expire prendrait l'argent sans rien rendre.
+    let rechargeCode = null;
+    if (recharge) {
+      const code = String(recharge).toUpperCase();
+      if (!/^[A-Z0-9_-]{1,32}$/.test(code)) {
+        return res.status(400).json({ error: "Code à recharger invalide." });
+      }
+      const { getVoucherByCode } = await import("./db.js");
+      const v = await getVoucherByCode(router.id, code);
+      if (!v || v.expired_at) {
+        return res.status(400).json({ error: "Ce code n'est plus actif : achetez-en un nouveau." });
+      }
+      rechargeCode = code;
+    }
 
     const reference = generateReference();
     const claimToken = generateClaimToken();
@@ -174,6 +191,7 @@ portalRouter.post("/api/checkout", rateLimit(12), async (req, res) => {
       claimHash: sha256(claimToken).toString("hex"),
       retrievalPin,
       transactionId,
+      rechargeCode,
     });
     res.json({ reference, claimToken, retrievalPin, redirectUrl });
   } catch (err) {

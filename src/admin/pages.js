@@ -72,8 +72,13 @@ function agentPill(router) {
   if (!pose) {
     return `<span class="pill wait" title="Le routeur n'a pas encore annoncé sa version">Version inconnue</span>`;
   }
-  if (pose === attendu) return `<span class="pill ok">Agent à jour</span>`;
-  return `<span class="pill off">Agent ancien (${esc(pose)} au lieu de ${esc(attendu)})</span>`;
+  // Les deux empreintes sont toujours affichees : « à jour » tout court ne
+  // dit pas par rapport a quoi, et une comparaison faite contre une version
+  // du manager pas encore deployee se lit comme un accord.
+  if (pose === attendu) {
+    return `<span class="pill ok" title="Routeur et manager servent le même script">Agent à jour (${esc(pose)})</span>`;
+  }
+  return `<span class="pill off">Agent ancien : routeur ${esc(pose)}, manager ${esc(attendu)}</span>`;
 }
 
 function onlinePill(lastSeen) {
@@ -707,8 +712,11 @@ adminRouter.get("/admin/routers/:id/agent", requireAdmin, async (req, res) => {
 
   res.type("html").send(layout(`Script agent : ${router.name}`, `
     <h1>Script agent ${agentPill(router)}</h1>
-    <p class="sub">${esc(router.name)} &middot; version servie ici :
-      <span class="mono">${empreinteAgent()}</span></p>
+    <p class="sub">${esc(router.name)}
+      &middot; version servie par le manager : <span class="mono">${empreinteAgent()}</span>
+      &middot; annoncée par le routeur :
+      <span class="mono">${router.info && router.info.agentVersion
+        ? esc(router.info.agentVersion) : "aucune"}</span></p>
     ${bandeauMsg(req)}
     <div class="card">
         <h2 style="margin-top:0">Script agent</h2>

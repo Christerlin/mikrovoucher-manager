@@ -8,6 +8,8 @@
 // Chaque appel met à jour last_seen (état "en ligne" du dashboard).
 
 import { Router } from "express";
+import { config } from "./config.js";
+import { agentRsc } from "./admin/pages.js";
 import {
   getRouterByToken, touchRouter, nextCommand, ackCommand,
   updateRouterInfo, replaceSessions, markVouchersUsed,
@@ -69,6 +71,22 @@ agentRouter.get("/agent/next", async (req, res) => {
     ].join("|"));
   } catch (err) {
     console.error("[agent/next]", err.message);
+    res.status(502).type("text/plain").send("");
+  }
+});
+
+// Le script de l'agent, servi a l'agent lui-meme : c'est ainsi qu'une mise a
+// jour se fait sans WinBox. Meme jeton que le reste, et le jeton y figure —
+// il n'est donc lisible que par le routeur qui le possede deja.
+agentRouter.get("/agent/self.rsc", async (req, res) => {
+  try {
+    const router = await authRouterDevice(req, res);
+    if (!router) return;
+    const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
+    const base = config.publicUrl || `${proto}://${req.headers.host}`;
+    res.type("text/plain").send(agentRsc(router, base));
+  } catch (err) {
+    console.error("[agent/self]", err.message);
     res.status(502).type("text/plain").send("");
   }
 });

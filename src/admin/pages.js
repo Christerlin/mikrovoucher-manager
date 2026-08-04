@@ -126,7 +126,7 @@ adminRouter.post("/admin/routers/:id/delete", requireAdmin, async (req, res) => 
 });
 
 // Script RouterOS généré pour un routeur donné (agent pull + walled-garden).
-function agentRsc(router, base) {
+export function agentRsc(router, base) {
   const host = base.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
   return `# =====================================================================
 # Mikrovoucher : agent pour "${router.name}" (genere par le dashboard)
@@ -214,6 +214,22 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
           :do { /ip hotspot active remove [find user=$code]; } on-error={}
           :do { /ip hotspot cookie remove [find user=$code]; } on-error={}
           :do { /ip hotspot user remove [find name=$code]; } on-error={}
+        }
+        # Mise a jour de l'agent, demandee depuis le dashboard. Le fichier
+        # est telecharge ici, mais l'import est confie a un declencheur a
+        # part : ce script se remplace lui-meme, et se supprimer en pleine
+        # execution laisserait le routeur sans agent. Le nouveau script
+        # retire le declencheur en fin de course.
+        :if ($action = "update") do={
+          :do {
+            /tool fetch url=("$backend/agent/self.rsc") \\
+              http-header-field=("x-router-token: $token") \\
+              dst-path="mikrovoucher-agent.rsc";
+            /system scheduler remove [find name=mv-update];
+            /system scheduler add name=mv-update interval=5s \\
+              on-event="/import mikrovoucher-agent.rsc" \\
+              comment="Mikrovoucher : import du nouvel agent, s'efface seul";
+          } on-error={}
         }
         # Reglage de l'essai gratuit depuis le dashboard. $code porte la
         # duree offerte, $up le delai de remise a zero, $prof le profil des
@@ -309,6 +325,11 @@ add name=mikrovoucher-sched interval=15s on-event="/system script run mikrovouch
 /ip hotspot walled-garden
 remove [find comment="mikrovoucher manager"]
 add dst-host=${host} comment="mikrovoucher manager"
+# Fin d'une mise a jour lancee depuis le dashboard : le declencheur a fait
+# son travail, il ne doit pas reimporter ce fichier toutes les 5 secondes.
+/system scheduler
+remove [find name=mv-update]
+
 # Rattrapage : les profils crees avant cette version n'ont pas de timeouts,
 # leurs sessions mortes continueraient a consommer le temps paye.
 :foreach p in=[/ip hotspot user profile find where name!="default"] do={
@@ -649,6 +670,7 @@ adminRouter.get("/admin/routers/:id/agent", requireAdmin, async (req, res) => {
   res.type("html").send(layout(`Script agent : ${router.name}`, `
     <h1>Script agent</h1>
     <p class="sub">${esc(router.name)}</p>
+    ${bandeauMsg(req)}
     <div class="card">
         <h2 style="margin-top:0">Script agent</h2>
         <p class="sub" style="margin:0 0 10px">Deux façons : <strong>Copier</strong> puis coller
@@ -657,10 +679,17 @@ adminRouter.get("/admin/routers/:id/agent", requireAdmin, async (req, res) => {
         <span class="mono">/import mikrovoucher-agent.rsc</span>.
         Réimportable à volonté : le script se remplace lui-même, rien à
         supprimer d'abord.</p>
-        <div style="display:flex;gap:10px;margin-bottom:10px">
-          <button type="button" id="copyBtn" onclick="copyAgent()">Copier le script</button>
+        <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+          <form method="post" action="/admin/routers/${router.id}/agent/update" style="margin:0"
+                data-confirm="Envoyer ce script au routeur et l'y installer ? Il remplacera l'agent en place.">
+            <button type="submit">Mettre à jour le routeur</button>
+          </form>
+          <button type="button" class="ghost" id="copyBtn" onclick="copyAgent()">Copier le script</button>
           <a class="btn ghost" href="/admin/routers/${router.id}/agent.rsc">Télécharger .rsc</a>
         </div>
+        <p class="sub" style="margin:0 0 10px">« Mettre à jour » ne marche que
+        si un agent tourne déjà : c'est lui qui va chercher son remplaçant.
+        La toute première installation passe forcément par WinBox.</p>
         <textarea id="agentScript" readonly onclick="this.select()">${esc(agentRsc(router, base))}</textarea>
         <script>
           function copyAgent() {
@@ -1003,6 +1032,15 @@ async function pousserFichier(routerId, portalDir, fichier) {
     comment: `${dossier}/${fichier.path}`,
   });
 }
+
+adminRouter.post("/admin/routers/:id/agent/update", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const router = await getRouter(id);
+  if (!router) return res.redirect("/admin/routers");
+  await queueCommand(id, "update", {});
+  res.redirect(`/admin/routers/${id}/agent?msg=` + encodeURIComponent(
+    "Mise à jour envoyée. Le routeur télécharge le script et l'importe dans la minute."));
+});
 
 adminRouter.post("/admin/routers/:id/trial", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);

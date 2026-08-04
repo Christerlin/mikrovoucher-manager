@@ -132,7 +132,8 @@ agentRouter.post("/agent/report",
       const router = await authRouterDevice(req, res);
       if (!router) return;
       const parts = rawBody(req).split("|");
-      const [identity, version, board, uptime, cpuLoad, freeMem, totalMem, activeUsers, totalUsers] = parts;
+      const [identity, version, board, uptime, cpuLoad, freeMem, totalMem,
+             activeUsers, totalUsers, agentVersion] = parts;
       await updateRouterInfo(router.id, {
         identity: identity || null,
         version: version || null,
@@ -143,6 +144,9 @@ agentRouter.post("/agent/report",
         totalMem: Number(totalMem) || 0,
         activeUsers: Number(activeUsers) || 0,
         totalUsers: Number(totalUsers) || 0,
+        // Empreinte du script reellement installe : c'est elle qui dit si le
+        // routeur tourne encore avec une ancienne version.
+        agentVersion: (agentVersion || "").trim() || null,
         reportedAt: new Date().toISOString(),
       });
       res.type("text/plain").send("ok");

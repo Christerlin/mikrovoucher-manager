@@ -2,6 +2,7 @@
 
 import { Router } from "express";
 import multer from "multer";
+import { createHash } from "node:crypto";
 import { config } from "../config.js";
 import {
   listRouters, getRouter, createRouter, deleteRouter,
@@ -62,6 +63,17 @@ function formatRate(raw) {
   if (!down) return raw;
   const clean = (v) => String(v).replace(/M$/i, "");
   return `\u2193 ${clean(down)} \u00b7 \u2191 ${clean(up)} Mb/s`;
+}
+
+// Etat de l'agent installe face a celui que sert le manager.
+function agentPill(router) {
+  const attendu = empreinteAgent();
+  const pose = router.info && router.info.agentVersion;
+  if (!pose) {
+    return `<span class="pill wait" title="Le routeur n'a pas encore annoncé sa version">Version inconnue</span>`;
+  }
+  if (pose === attendu) return `<span class="pill ok">Agent à jour</span>`;
+  return `<span class="pill off">Agent ancien (${esc(pose)} au lieu de ${esc(attendu)})</span>`;
 }
 
 function onlinePill(lastSeen) {
@@ -126,8 +138,26 @@ adminRouter.post("/admin/routers/:id/delete", requireAdmin, async (req, res) => 
 });
 
 // Script RouterOS généré pour un routeur donné (agent pull + walled-garden).
+// Empreinte du script. Elle voyage dans le script lui-meme et revient dans
+// le rapport de l'agent : le dashboard compare, et sait donc si un routeur
+// tourne encore avec une ancienne version — sans avoir a ouvrir WinBox.
+// Calculee sur un script "anonyme" pour qu'elle ne depende ni du nom du
+// routeur ni de son jeton : tous les routeurs a jour affichent la meme.
+let _empreinte = null;
+export function empreinteAgent() {
+  if (!_empreinte) {
+    const modele = corpsAgent({ name: "x", pull_token: "x" }, "x", "x");
+    _empreinte = createHash("sha256").update(modele).digest("hex").slice(0, 8);
+  }
+  return _empreinte;
+}
+
 export function agentRsc(router, base) {
   const host = base.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  return corpsAgent(router, base, host, empreinteAgent());
+}
+
+function corpsAgent(router, base, host, version = "") {
   return `# =====================================================================
 # Mikrovoucher : agent pour "${router.name}" (genere par le dashboard)
 # RouterOS v7. Importer sur le routeur : /import mikrovoucher-agent.rsc
@@ -147,6 +177,7 @@ remove [find name=mikrovoucher-agent]
 add name=mikrovoucher-agent dont-require-permissions=no source={
   :local backend "${base}";
   :local token "${router.pull_token}";
+  :local agentver "${version}";
   :local more true;
   :for i from=1 to=10 do={
     :if ($more) do={
@@ -278,7 +309,7 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
     :local rusr [:len [/ip hotspot user find]];
     /tool fetch url=("$backend/agent/report") http-method=post \\
       http-header-field=("x-router-token: $token") \\
-      http-data=("$rid|$rver|$rbrd|$rupt|$rcpu|$rfm|$rtm|$ract|$rusr") \\
+      http-data=("$rid|$rver|$rbrd|$rupt|$rcpu|$rfm|$rtm|$ract|$rusr|$agentver") \\
       keep-result=no;
   } on-error={}
   :do {
@@ -479,7 +510,8 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
     </div>`;
 
   res.type("html").send(layout(router.name, `
-    <h1>${esc(router.name)} <span id="statePill">${onlinePill(router.last_seen)}</span></h1>
+    <h1>${esc(router.name)} <span id="statePill">${onlinePill(router.last_seen)}</span>
+      ${agentPill(router)}</h1>
     ${bandeauMsg(req)}
     <p class="sub">Slug : <span class="mono">${esc(router.slug)}</span>
       &middot; Portail : <span class="mono">${esc(router.portal_url || "non défini")}</span></p>
@@ -668,8 +700,9 @@ adminRouter.get("/admin/routers/:id/agent", requireAdmin, async (req, res) => {
   const base = publicBase(req);
 
   res.type("html").send(layout(`Script agent : ${router.name}`, `
-    <h1>Script agent</h1>
-    <p class="sub">${esc(router.name)}</p>
+    <h1>Script agent ${agentPill(router)}</h1>
+    <p class="sub">${esc(router.name)} &middot; version servie ici :
+      <span class="mono">${empreinteAgent()}</span></p>
     ${bandeauMsg(req)}
     <div class="card">
         <h2 style="margin-top:0">Script agent</h2>

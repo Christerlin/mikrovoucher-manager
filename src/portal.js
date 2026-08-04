@@ -83,11 +83,16 @@ portalRouter.get("/api/portal/:slug/expiry/:code", rateLimit(60), async (req, re
     const code = String(req.params.code || "");
     if (!/^[A-Za-z0-9_-]{1,32}$/.test(code)) return res.status(404).json({ error: "Inconnu." });
     const { echeanceVoucher } = await import("./db.js");
-    const restant = await echeanceVoucher(router.id, code);
-    // Meme reponse pour un code inconnu et un code sans echeance : on ne
-    // transforme pas l'API en detecteur de codes valides.
-    if (restant === null) return res.status(404).json({ error: "Inconnu." });
-    res.json({ restant: Math.max(0, restant) });
+    const e = await echeanceVoucher(router.id, code);
+    // Meme reponse pour un code inconnu, echu ou sans echeance : l'API ne
+    // doit pas dire ce qui n'existe plus.
+    if (!e) return res.status(404).json({ error: "Inconnu." });
+    // Un code echu reste connu, et rechargeable : le portail doit pouvoir
+    // proposer de le reprendre, alors qu'un code inconnu n'ouvre sur rien.
+    res.json({
+      restant: e.echu ? 0 : Math.max(0, e.restant),
+      demarre: e.demarre, echu: e.echu,
+    });
   } catch (err) {
     console.error("[expiry]", err.message);
     res.status(502).json({ error: "Indisponible." });
@@ -169,9 +174,11 @@ portalRouter.post("/api/checkout", rateLimit(12), async (req, res) => {
         return res.status(400).json({ error: "Code à recharger invalide." });
       }
       const { getVoucherByCode } = await import("./db.js");
+      // Un code echu reste rechargeable : il renait avec le forfait paye, et
+      // le client reprend SON code. Seul un code inconnu est refuse.
       const v = await getVoucherByCode(router.id, code);
-      if (!v || v.expired_at) {
-        return res.status(400).json({ error: "Ce code n'est plus actif : achetez-en un nouveau." });
+      if (!v) {
+        return res.status(400).json({ error: "Code inconnu : achetez un nouveau code." });
       }
       rechargeCode = code;
     }

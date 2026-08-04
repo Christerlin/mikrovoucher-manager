@@ -356,14 +356,20 @@ export async function setPortalDir(routerId, dir) {
 // la premiere connexion, meme passees hors ligne.
 export async function echeanceVoucher(routerId, code) {
   const { rows } = await pool.query(
-    `SELECT EXTRACT(EPOCH FROM (v.used_at
-              + ((p.validity_seconds + v.extra_seconds) || ' seconds')::interval
-              - now()))::int AS restant
+    `SELECT CASE
+              -- Code pret mais jamais connecte : l'horloge ne demarre qu'a la
+              -- premiere connexion, il a donc sa duree entiere devant lui.
+              WHEN v.used_at IS NULL THEN (p.validity_seconds + v.extra_seconds)
+              ELSE EXTRACT(EPOCH FROM (v.used_at
+                     + ((p.validity_seconds + v.extra_seconds) || ' seconds')::interval
+                     - now()))::int
+            END AS restant,
+            (v.used_at IS NOT NULL) AS demarre,
+            (v.expired_at IS NOT NULL) AS echu
        FROM vouchers v JOIN plans p ON p.id = v.plan_id
       WHERE v.router_id = $1 AND v.code = $2
-        AND v.used_at IS NOT NULL AND v.expired_at IS NULL
         AND p.validity_seconds > 0`, [routerId, code]);
-  return rows[0] ? rows[0].restant : null;
+  return rows[0] || null;
 }
 
 // --------------------------------------------------------- sponsors ----
@@ -444,10 +450,40 @@ export async function getVoucherByCode(routerId, code) {
 // calendaire avancent d'autant. Le client garde son code et sa session ; se
 // deconnecter pour ressaisir un nouveau code fait perdre la moitie des
 // acheteurs au moment ou ils sont decides.
-export async function prolongerVoucher(routerId, code, secondes) {
+export async function prolongerVoucher(routerId, code, secondes, plan = null) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+
+    // Code deja echu : il a ete retire du routeur, il n'y a plus de compte a
+    // prolonger. On le fait renaitre avec le forfait qui vient d'etre paye —
+    // le client reprend SON code au lieu d'en apprendre un nouveau.
+    const { rows: exist } = await client.query(
+      `SELECT id, plan_id, expired_at FROM vouchers
+        WHERE router_id = $1 AND code = $2 FOR UPDATE`, [routerId, code]);
+    if (exist.length === 0) { await client.query("ROLLBACK"); return null; }
+
+    if (exist[0].expired_at) {
+      if (!plan) { await client.query("ROLLBACK"); return null; }
+      const cmd = await client.query(
+        `INSERT INTO commands (router_id, action, payload)
+         VALUES ($1,'add',$2) RETURNING id`,
+        [routerId, {
+          code, uptime: plan.uptime, comment: `recharge ${plan.code}`,
+          profile: `mv-${plan.code}`, shared: plan.shared_users,
+          rate: plan.rate_limit || "",
+        }]);
+      // Compteur remis a neuf : l'echeance repartira de la prochaine
+      // connexion, comme pour un code jamais utilise.
+      await client.query(
+        `UPDATE vouchers SET plan_id = $2, expired_at = NULL, used_at = NULL,
+                             used_uptime = NULL, used_bytes = 0,
+                             extra_seconds = 0, status = 'QUEUED', command_id = $3
+          WHERE id = $1`, [exist[0].id, plan.id, cmd.rows[0].id]);
+      await client.query("COMMIT");
+      return { voucherId: exist[0].id, mode: "reactive" };
+    }
+
     const { rows } = await client.query(
       `UPDATE vouchers v SET extra_seconds = extra_seconds + $3
         WHERE v.router_id = $1 AND v.code = $2 AND v.expired_at IS NULL
@@ -471,7 +507,7 @@ export async function prolongerVoucher(routerId, code, secondes) {
     await client.query(`UPDATE vouchers SET command_id = $2 WHERE id = $1`,
       [v.id, cmd.rows[0].id]);
     await client.query("COMMIT");
-    return { voucherId: v.id, total };
+    return { voucherId: v.id, total, mode: "prolonge" };
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;

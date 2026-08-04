@@ -20,7 +20,7 @@ async function ensureVoucher(order) {
   // Recharge : on prolonge le code en service au lieu d'en creer un neuf.
   if (order.recharge_code) {
     const r = await prolongerVoucher(order.router_id, order.recharge_code,
-      durationToSeconds(plan.uptime));
+      durationToSeconds(plan.uptime), plan);
     if (r) {
       await attachVoucherToOrder(order.reference, r.voucherId);
       return r.voucherId;
@@ -58,7 +58,11 @@ async function ensureVoucher(order) {
 export async function processOrder(order) {
   if (order.status === "DELIVERED") {
     const v = order.voucher_id ? await getVoucherById(order.voucher_id) : null;
-    return { status: "DELIVERED", voucherCode: v ? v.code : undefined };
+    // Pour une recharge, le portail doit savoir s'il faut laisser le client
+    // tranquille (session en cours) ou le reconnecter (code reactive apres
+    // coupure). used_at le dit : il est vide tant que le code n'a pas resservi.
+    const prolonge = Boolean(order.recharge_code && v && v.used_at);
+    return { status: "DELIVERED", voucherCode: v ? v.code : undefined, prolonge };
   }
   if (order.status === "EXPIRED" || order.status === "FAILED") {
     return { status: order.status };

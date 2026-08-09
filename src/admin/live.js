@@ -61,6 +61,10 @@
     return td;
   }
 
+  // Dernier reste affiche par client : sert a empecher le compteur de
+  // remonter d'un rafraichissement a l'autre.
+  var precedent = {};
+
   function renderRow(s) {
     var tr = document.createElement("tr");
 
@@ -95,6 +99,18 @@
     var routeur = toSeconds(s.timeLeft);
     var cal = (typeof s.validityLeft === "number") ? Math.max(0, s.validityLeft) : null;
     var left = (cal === null) ? routeur : (routeur ? Math.min(routeur, cal) : cal);
+
+    // Le compteur du routeur ne nous parvient qu'a chaque rapport de l'agent
+    // (15 s) : entre deux, il vaut la meme chose. Comme l'affichage, lui,
+    // descend chaque seconde, chaque rafraichissement le faisait remonter —
+    // un yoyo d'une seconde, bien visible sur une valeur ronde comme 14j.
+    // On ne remonte donc jamais le compteur, sauf saut franc : une recharge
+    // ajoute des heures, pas des secondes.
+    var affiche = precedent[s.username];
+    if (typeof affiche === "number" && left > affiche && left - affiche < 120) {
+      left = affiche;
+    }
+    precedent[s.username] = left;
     var tl = document.createElement("td");
     tl.className = "mono";
     if (left) {

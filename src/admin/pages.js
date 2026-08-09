@@ -848,7 +848,10 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
         <label>Code <input name="code" placeholder="3j" size="5" required></label>
         <label>Nom <input name="label" placeholder="3 jours" size="12" required></label>
         <label>Prix HTG <input name="price_htg" type="number" min="20" size="6" required></label>
-        <label>Durée RouterOS <input name="uptime" placeholder="3d" size="6" required></label>
+        <label>Durée RouterOS
+          <input name="uptime" placeholder="3d" size="6" required
+                 pattern="([0-9]+[wdhms])+"
+                 title="Format RouterOS : 3d, 12h, 2w, 1d12h. Pas de « j » ni de « jours »."></label>
         <label>Appareils <input name="shared_users" type="number" min="1" max="50" value="1" size="4" required></label>
         <label>Débit ↓ Mb/s <input name="down_mbps" type="number" min="0" step="0.5" placeholder="0 = illimité" size="5"></label>
         <label>Débit ↑ Mb/s <input name="up_mbps" type="number" min="0" step="0.5" placeholder="0 = illimité" size="5"></label>
@@ -1273,15 +1276,25 @@ adminRouter.post("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
   // normalise (pas d'espaces ni de caractères exotiques), sinon le forfait
   // serait rejeté par le portail et le profil impossible à créer.
   const cleanCode = String(code || "").toLowerCase().replace(/[^a-z0-9_-]/g, "");
-  if (cleanCode && label && price_htg && uptime) {
+  // La duree part telle quelle dans limit-uptime : RouterOS refuse "15j" ou
+  // "15 jours", et l'erreur est avalee par le on-error de l'agent — le code
+  // ne serait jamais cree sur le routeur. En prime, une duree illisible donne
+  // une validite de 0, donc un forfait qui n'expire jamais.
+  const dureeBrute = String(uptime || "").trim().toLowerCase().replace(/\s+/g, "");
+  const secondes = durationToSeconds(dureeBrute);
+  if (!secondes) {
+    return res.redirect(`/admin/routers/${id}/plans?msg=` + encodeURIComponent(
+      `Durée « ${String(uptime || "").slice(0, 20)} » non comprise. Utilisez le format RouterOS : 3d, 12h, 2w, 1d12h.`));
+  }
+  if (cleanCode && label && price_htg) {
     await upsertPlan({
       routerId: id, code: cleanCode, label: String(label),
-      priceHtg: Number(price_htg), uptime: String(uptime),
+      priceHtg: Number(price_htg), uptime: dureeBrute,
       sharedUsers: Number((req.body || {}).shared_users) || 1,
       // RouterOS attend "montant/descendant" (ex : 1M/5M). Vide = illimité.
       // La durée saisie sert aussi de validité calendaire : un forfait
       // "3 jours" expire 3 jours après la première connexion du client.
-      validitySeconds: durationToSeconds(String(uptime)),
+      validitySeconds: secondes,
       rateLimit: (function () {
         const up = Number((req.body || {}).up_mbps) || 0;
         const down = Number((req.body || {}).down_mbps) || 0;

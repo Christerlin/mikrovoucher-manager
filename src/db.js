@@ -165,7 +165,24 @@ export async function initDb() {
       role          TEXT NOT NULL DEFAULT 'vendeur',  -- owner | vendeur
       active        BOOLEAN NOT NULL DEFAULT true,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-      last_login    TIMESTAMPTZ
+      last_login    TIMESTAMPTZ,
+      -- L'exploitant du service lui-meme : il gere les organisations et les
+      -- invitations. Distinct du proprietaire d'une organisation, qui ne voit
+      -- que la sienne.
+      platform_admin BOOLEAN NOT NULL DEFAULT false
+    );
+
+    -- Inscription sur invitation. Une inscription ouverte a tout venant
+    -- laisserait n'importe qui creer des organisations sur le service ; les
+    -- premiers operateurs se recrutent de toute facon un par un.
+    CREATE TABLE IF NOT EXISTS invitations (
+      token       TEXT PRIMARY KEY,
+      note        TEXT NOT NULL DEFAULT '',
+      created_by  INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      expires_at  TIMESTAMPTZ NOT NULL,
+      used_at     TIMESTAMPTZ,
+      tenant_id   INT REFERENCES tenants(id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS sponsors (
@@ -512,6 +529,97 @@ export function verifierMotDePasse(motDePasse, empreinte) {
   const attendu = Buffer.from(cleHex, "hex");
   const calcule = scryptSync(String(motDePasse), Buffer.from(selHex, "hex"), attendu.length);
   return attendu.length === calcule.length && timingSafeEqual(attendu, calcule);
+}
+
+// Cree une organisation et son premier proprietaire d'un seul tenant : sans
+// cela, un compte sans organisation ne verrait rien et ne pourrait rien
+// reparer lui-meme.
+export async function creerOrganisation({ nom, slug, email, motDePasse, platformAdmin = false }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: t } = await client.query(
+      `INSERT INTO tenants (name, slug) VALUES ($1,$2) RETURNING *`, [nom, slug]);
+    const { rows: u } = await client.query(
+      `INSERT INTO users (email, name, pass_hash, role, tenant_id, platform_admin)
+       VALUES ($1,$2,$3,'owner',$4,$5) RETURNING *`,
+      [String(email).trim(), "", hacherMotDePasse(motDePasse), t[0].id, platformAdmin]);
+    await client.query("COMMIT");
+    return { tenant: t[0], user: u[0] };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Slug libre derive du nom : il voyage dans aucune URL publique pour l'instant,
+// mais il doit rester unique.
+export async function slugLibre(base) {
+  const propre = String(base || "org").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "org";
+  for (let i = 0; i < 50; i++) {
+    const essai = i === 0 ? propre : `${propre}-${i + 1}`;
+    const { rowCount } = await pool.query(`SELECT 1 FROM tenants WHERE slug = $1`, [essai]);
+    if (rowCount === 0) return essai;
+  }
+  return `${propre}-${Date.now().toString(36)}`;
+}
+
+// ------------------------------------------------------- invitations ----
+
+export async function creerInvitation({ note, parId, jours = 14 }) {
+  const token = randomBytes(24).toString("hex");
+  const { rows } = await pool.query(
+    `INSERT INTO invitations (token, note, created_by, expires_at)
+     VALUES ($1,$2,$3, now() + ($4 || ' days')::interval) RETURNING *`,
+    [token, String(note || "").slice(0, 120), parId || null, jours]);
+  return rows[0];
+}
+
+export async function listInvitations() {
+  const { rows } = await pool.query(
+    `SELECT i.*, t.name AS tenant_name
+       FROM invitations i LEFT JOIN tenants t ON t.id = i.tenant_id
+      ORDER BY i.created_at DESC LIMIT 100`);
+  return rows;
+}
+
+export async function invitationValide(token) {
+  const { rows } = await pool.query(
+    `SELECT * FROM invitations
+      WHERE token = $1 AND used_at IS NULL AND expires_at > now()`, [String(token || "")]);
+  return rows[0] || null;
+}
+
+export async function consommerInvitation(token, tenantId) {
+  // La condition used_at IS NULL est dans l'UPDATE : deux inscriptions
+  // simultanees avec le meme lien, une seule passe.
+  const { rowCount } = await pool.query(
+    `UPDATE invitations SET used_at = now(), tenant_id = $2
+      WHERE token = $1 AND used_at IS NULL AND expires_at > now()`, [token, tenantId]);
+  return rowCount === 1;
+}
+
+export async function supprimerInvitation(token) {
+  await pool.query(`DELETE FROM invitations WHERE token = $1 AND used_at IS NULL`, [token]);
+}
+
+// --------------------------------------------------- organisations ----
+
+export async function listTenants() {
+  const { rows } = await pool.query(
+    `SELECT t.*,
+            (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
+            (SELECT count(*)::int FROM users u WHERE u.tenant_id = t.id AND u.active) AS comptes
+       FROM tenants t ORDER BY t.created_at DESC`);
+  return rows;
+}
+
+export async function setTenantActif(id, actif) {
+  await pool.query(`UPDATE tenants SET active = $2 WHERE id = $1`, [id, actif]);
 }
 
 export async function compterUtilisateurs() {

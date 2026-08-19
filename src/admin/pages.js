@@ -15,14 +15,16 @@ import {
   deletePortalFile, setPortalDir,
   listSponsors, createSponsor, setSponsorImage, toggleSponsor, deleteSponsor,
   dureeRouterOsValide, setTrial, remiseAZero, restaurer,
-  getTenant, setTenantPaym, setTenantNom,
+  getTenant, setTenantPaym, setTenantNom, listTenants, setTenantActif,
+  creerOrganisation, slugLibre, creerInvitation, listInvitations,
+  invitationValide, consommerInvitation, supprimerInvitation,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
 import { generateRouterToken, generateVoucherCode, durationToSeconds } from "../codes.js";
 import { layout, esc } from "./html.js";
-import { requireAdmin, requireOwner, loginPage, handleLogin, handleLogout,
-         reposerSession } from "./auth.js";
+import { requireAdmin, requireOwner, requirePlatform, loginPage, handleLogin,
+         handleLogout, reposerSession } from "./auth.js";
 
 export const adminRouter = Router();
 
@@ -83,10 +85,224 @@ adminRouter.use("/admin/users/:id", requireAdmin, requireOwner, function (req, r
   }).catch(next);
 });
 
+// --------------------------------------------------------- inscription ----
+// Page publique, mais seulement pour qui detient un lien d'invitation.
+function pageInscription(res, token, erreur = "", valeurs = {}) {
+  res.type("html").send(layout("Inscription", `
+    <div class="card" style="max-width:520px;margin:50px auto">
+      <h1 style="margin-top:0">Créer votre organisation</h1>
+      <p class="sub">Vous vendrez du WiFi sur vos propres routeurs, et
+      l'argent de vos ventes arrivera directement chez vous.</p>
+      ${erreur ? `<p class="err-msg">${esc(erreur)}</p>` : ""}
+      <form method="post" action="/inscription/${esc(token)}"
+            style="display:flex;flex-direction:column;gap:12px">
+        <input name="organisation" placeholder="Nom de votre organisation"
+               value="${esc(valeurs.organisation || "")}" required>
+        <input type="email" name="email" placeholder="Votre adresse e-mail"
+               value="${esc(valeurs.email || "")}" required>
+        <input type="password" name="password"
+               placeholder="Mot de passe (10 caractères minimum)" minlength="10" required>
+        <button type="submit">Créer mon compte</button>
+      </form>
+    </div>`));
+}
+
+adminRouter.get("/inscription/:token", async (req, res) => {
+  const inv = await invitationValide(req.params.token);
+  if (!inv) {
+    return res.status(404).type("html").send(layout("Invitation", `
+      <div class="card" style="max-width:460px;margin:60px auto;text-align:center">
+        <h1>Lien inutilisable</h1>
+        <p class="sub">Cette invitation a déjà servi, ou elle a expiré.
+        Demandez-en une nouvelle.</p>
+      </div>`));
+  }
+  pageInscription(res, req.params.token);
+});
+
+adminRouter.post("/inscription/:token", async (req, res) => {
+  const token = String(req.params.token);
+  const inv = await invitationValide(token);
+  if (!inv) return res.redirect(`/inscription/${encodeURIComponent(token)}`);
+
+  const { organisation, email, password } = req.body || {};
+  const v = { organisation, email };
+  if (!organisation || !email || String(password || "").length < 10) {
+    return pageInscription(res, token, "Tous les champs sont requis, mot de passe d'au moins 10 caractères.", v);
+  }
+  if (await getUserByEmail(email)) {
+    return pageInscription(res, token, "Cette adresse est déjà utilisée.", v);
+  }
+
+  const org = await creerOrganisation({
+    nom: String(organisation).trim().slice(0, 80),
+    slug: await slugLibre(organisation),
+    email, motDePasse: password,
+  });
+  // L'invitation se consomme APRES la creation : si celle-ci echoue, le lien
+  // reste utilisable au lieu d'etre perdu.
+  if (!await consommerInvitation(token, org.tenant.id)) {
+    console.warn(`[inscription] invitation ${token} déjà consommée en parallèle`);
+  }
+  res.redirect("/admin/login");
+});
+
 adminRouter.get("/admin/login", (req, res) => loginPage(res));
 adminRouter.post("/admin/login", handleLogin);
 adminRouter.post("/admin/logout", handleLogout);
 adminRouter.get("/admin", requireAdmin, (req, res) => res.redirect("/admin/routers"));
+
+// -------------------------------------------------- premier démarrage ----
+// Le mot de passe de secours mène ici : créer l'organisation ET son premier
+// propriétaire en une fois. Créer un compte sans organisation donnerait un
+// tableau de bord vide que personne ne pourrait réparer.
+adminRouter.get("/admin/premier-demarrage", requireAdmin, async (req, res) => {
+  if (!req.user.bootstrap) return res.redirect("/admin/routers");
+  res.type("html").send(layout("Premier démarrage", `
+    <div class="card" style="max-width:520px;margin:50px auto">
+      <h1 style="margin-top:0">Premier démarrage</h1>
+      <p class="sub">Créez votre organisation et votre compte. Ensuite, le mot
+      de passe d'administration cessera d'ouvrir le tableau de bord — le
+      laisser vivre en ferait une porte dérobée permanente.</p>
+      ${bandeauMsg(req)}
+      <form method="post" action="/admin/premier-demarrage"
+            style="display:flex;flex-direction:column;gap:12px">
+        <input name="organisation" placeholder="Nom de votre organisation" required>
+        <input type="email" name="email" placeholder="Votre adresse e-mail" required>
+        <input type="password" name="password" placeholder="Mot de passe (10 caractères minimum)"
+               minlength="10" required>
+        <button type="submit">Créer</button>
+      </form>
+    </div>`));
+});
+
+adminRouter.post("/admin/premier-demarrage", requireAdmin, async (req, res) => {
+  if (!req.user.bootstrap) return res.redirect("/admin/routers");
+  const retour = (m) => res.redirect("/admin/premier-demarrage?msg=" + encodeURIComponent(m));
+  const { organisation, email, password } = req.body || {};
+  if (!organisation || !email || String(password || "").length < 10) {
+    return retour("Tous les champs sont requis, mot de passe d'au moins 10 caractères.");
+  }
+  // Ce premier compte administre le service lui-même : c'est lui qui invitera
+  // les organisations suivantes.
+  await creerOrganisation({
+    nom: String(organisation).trim().slice(0, 80),
+    slug: await slugLibre(organisation),
+    email, motDePasse: password, platformAdmin: true,
+  });
+  handleLogout(req, res);
+});
+
+// ---------------------------------------------------------- plateforme ----
+adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, res) => {
+  const [orgs, invits] = await Promise.all([listTenants(), listInvitations()]);
+  const base = publicBase(req);
+  const date = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "–");
+
+  const lignesOrgs = orgs.map((t) => `
+    <tr>
+      <td><strong>${esc(t.name)}</strong>
+        <div style="font-size:12px;color:var(--ink-soft)" class="mono">${esc(t.slug)}</div></td>
+      <td class="num">${t.routeurs}</td>
+      <td class="num">${t.comptes}</td>
+      <td>${t.paym_client_id
+            ? `<span class="pill ok">Pay'm posé</span>`
+            : `<span class="pill wait">sans Pay'm</span>`}</td>
+      <td>${t.active ? "actif" : `<span class="pill off">suspendu</span>`}</td>
+      <td style="font-size:12px;color:var(--ink-soft)">${date(t.created_at)}</td>
+      <td style="text-align:right">
+        ${t.id === req.user.tenant_id
+          ? `<span style="color:var(--ink-soft);font-size:12px">la vôtre</span>`
+          : `<form method="post" action="/admin/plateforme/${t.id}/actif" style="margin:0;display:inline"
+                   data-confirm="${t.active ? `Suspendre ${esc(t.name)} ? Ses comptes ne pourront plus entrer. Son portail continuera de servir ses clients.` : ""}">
+              <input type="hidden" name="actif" value="${t.active ? "0" : "1"}">
+              <button class="${t.active ? "danger" : "btn ghost"}" type="submit">${t.active ? "Suspendre" : "Réactiver"}</button>
+            </form>`}
+      </td>
+    </tr>`).join("");
+
+  const lignesInvits = invits.map((i) => `
+    <tr>
+      <td class="mono" style="font-size:12px">${esc(base)}/inscription/${esc(i.token).slice(0, 10)}…</td>
+      <td>${esc(i.note || "–")}</td>
+      <td>${i.used_at
+            ? `<span class="pill ok">utilisée — ${esc(i.tenant_name || "?")}</span>`
+            : new Date(i.expires_at) < new Date()
+              ? `<span class="pill off">expirée</span>`
+              : `<span class="pill wait">en attente</span>`}</td>
+      <td style="font-size:12px;color:var(--ink-soft)">${date(i.expires_at)}</td>
+      <td style="text-align:right">
+        ${i.used_at ? "" : `
+        <button class="btn ghost" type="button"
+                onclick="copier('${esc(base)}/inscription/${esc(i.token)}', this)">Copier le lien</button>
+        <form method="post" action="/admin/plateforme/invitations/${esc(i.token)}/delete"
+              style="margin:0;display:inline">
+          <button class="danger" type="submit">Retirer</button>
+        </form>`}
+      </td>
+    </tr>`).join("");
+
+  res.type("html").send(layout("Plateforme", `
+    <h1>Plateforme</h1>
+    <p class="sub">Les organisations qui utilisent le service.</p>
+    ${bandeauMsg(req)}
+
+    <div class="card">
+      <table>
+        <tr><th>Organisation</th><th class="num">Routeurs</th><th class="num">Comptes</th>
+            <th>Encaissement</th><th>État</th><th>Créée</th><th></th></tr>
+        ${lignesOrgs}
+      </table>
+      <p class="sub" style="margin:12px 0 0">Suspendre ferme le tableau de bord
+      de l'organisation. Son portail continue de servir ses clients : ils ont
+      payé, ils n'y sont pour rien.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Invitations</h2>
+      <p class="sub" style="margin:0 0 12px">L'inscription se fait sur
+      invitation : une inscription ouverte laisserait n'importe qui créer des
+      organisations. Le lien vaut 14 jours et ne sert qu'une fois.</p>
+      <form class="inline" method="post" action="/admin/plateforme/invitations">
+        <label>Pour qui <input name="note" size="26" placeholder="Nom du commerce, téléphone…"></label>
+        <button type="submit">Créer une invitation</button>
+      </form>
+      <table style="margin-top:14px">
+        <tr><th>Lien</th><th>Note</th><th>État</th><th>Expire</th><th></th></tr>
+        ${lignesInvits || `<tr><td colspan="5" style="color:var(--ink-soft)">Aucune invitation.</td></tr>`}
+      </table>
+    </div>
+
+    <script>
+      function copier(lien, btn) {
+        var fini = function () { btn.textContent = "Copié !";
+          setTimeout(function () { btn.textContent = "Copier le lien"; }, 2000); };
+        if (navigator.clipboard) navigator.clipboard.writeText(lien).then(fini, fini);
+        else { window.prompt("Copiez ce lien :", lien); }
+      }
+    </script>`, { active: "plateforme", user: req.user,
+                  side: menuGeneral("g-plateforme", req.user) }));
+});
+
+adminRouter.post("/admin/plateforme/invitations", requireAdmin, requirePlatform, async (req, res) => {
+  await creerInvitation({ note: (req.body || {}).note, parId: req.user.id });
+  res.redirect("/admin/plateforme?msg=" + encodeURIComponent("Invitation créée. Copiez le lien et envoyez-le."));
+});
+
+adminRouter.post("/admin/plateforme/invitations/:token/delete", requireAdmin, requirePlatform, async (req, res) => {
+  await supprimerInvitation(String(req.params.token));
+  res.redirect("/admin/plateforme?msg=" + encodeURIComponent("Invitation retirée."));
+});
+
+adminRouter.post("/admin/plateforme/:id/actif", requireAdmin, requirePlatform, async (req, res) => {
+  const id = Number(req.params.id);
+  const retour = (m) => res.redirect("/admin/plateforme?msg=" + encodeURIComponent(m));
+  // On ne se suspend pas soi-meme : plus personne ne pourrait rouvrir.
+  if (id === req.user.tenant_id) return retour("Vous ne pouvez pas suspendre votre propre organisation.");
+  const actif = (req.body || {}).actif === "1";
+  await setTenantActif(id, actif);
+  return retour(actif ? "Organisation réactivée." : "Organisation suspendue.");
+});
 
 // -------------------------------------------------------- mon compte ----
 // Reglages du client du service : son nom, et surtout ses identifiants Pay'm.
@@ -671,6 +887,7 @@ function menuRouteur(router, actif, user) {
 function menuGeneral(actif, user) {
   const items = [["/admin/routers", "Routeurs", "g-routeurs"]];
   if (!user || user.role === "owner") items.push(["/admin/compte", "Mon compte", "g-compte"]);
+  if (user && user.platform_admin) items.push(["/admin/plateforme", "Plateforme", "g-plateforme"]);
   // Un vendeur n'a rien a faire dans la caisse ni dans les comptes : les
   // masquer evite de lui proposer des portes qui se refermeront sur lui.
   if (!user || user.role === "owner") {

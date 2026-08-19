@@ -14,7 +14,7 @@ import { safeEqual } from "../codes.js";
 import { layout } from "./html.js";
 import {
   compterUtilisateurs, getUserByEmail, getUserById, verifierMotDePasse,
-  touchUserLogin, createUser,
+  touchUserLogin, createUser, getTenant,
 } from "../db.js";
 
 const SESSION_COOKIE = "mvm_session";
@@ -64,6 +64,13 @@ async function utilisateurDeLaRequete(req) {
   const user = await getUserById(Number(id));
   if (!user || !user.active) return null;
   if (String(user.pass_hash).slice(-12) !== empreinte) return null;  // mot de passe changé
+  // Organisation suspendue : le tableau de bord se ferme. Le portail, lui,
+  // continue de servir les clients finaux — ils ont payé, ils n'y sont pour
+  // rien.
+  if (user.tenant_id) {
+    const t = await getTenant(user.tenant_id);
+    if (!t || !t.active) return null;
+  }
   return user;
 }
 
@@ -73,6 +80,17 @@ export function requireAdmin(req, res, next) {
     req.user = user;
     next();
   }).catch(next);
+}
+
+// Réservé à l'exploitant du service : organisations et invitations.
+export function requirePlatform(req, res, next) {
+  if (req.user && (req.user.platform_admin || req.user.bootstrap)) return next();
+  res.status(403).type("html").send(layout("Accès refusé", `
+    <div class="card" style="max-width:460px;margin:60px auto;text-align:center">
+      <h1>Accès refusé</h1>
+      <p class="sub">Cette page est réservée à l'exploitant du service.</p>
+      <a class="btn ghost" href="/admin/routers">Retour</a>
+    </div>`));
 }
 
 // Réservé aux propriétaires : finances, réglages, comptes, tout ce qui
@@ -145,7 +163,7 @@ export async function handleLogin(req, res) {
     }
     fails.delete(ip);
     poserCookie(req, res, "bootstrap.-." + signer("bootstrap.-"));
-    return res.redirect("/admin/users");
+    return res.redirect("/admin/premier-demarrage");
   }
 
   const user = email ? await getUserByEmail(email) : null;
@@ -154,6 +172,12 @@ export async function handleLogin(req, res) {
   if (!user || !user.active || !verifierMotDePasse(motDePasse, user.pass_hash)) {
     echec();
     return loginPage(res, "E-mail ou mot de passe incorrect.");
+  }
+  if (user.tenant_id) {
+    const t = await getTenant(user.tenant_id);
+    if (!t || !t.active) {
+      return loginPage(res, "Ce compte est suspendu. Contactez le service.");
+    }
   }
   fails.delete(ip);
   await touchUserLogin(user.id);

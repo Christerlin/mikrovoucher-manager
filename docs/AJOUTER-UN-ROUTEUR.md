@@ -369,3 +369,27 @@ n'a donc rien à ressaisir. Aucune autre organisation n'en hérite. Sans ce
 verrou, un nouveau client qui n'a pas encore posé ses identifiants encaisserait
 en silence sur le compte du service — la pire panne que ce système puisse
 avoir.
+
+
+## Plusieurs organisations sur une même instance
+
+Chaque organisation ne voit que ses routeurs, ses ventes, ses codes et ses
+comptes. La frontière est vérifiée à l'entrée : ouvrir l'URL d'un routeur qui
+n'est pas à soi répond « introuvable », comme s'il n'existait pas.
+
+**Premier démarrage.** `ADMIN_PASSWORD` mène à un écran qui crée d'un coup
+l'organisation et son premier compte. Ce compte-là administre le service :
+c'est lui qui invitera les suivants. Ensuite le mot de passe de secours cesse
+d'ouvrir le tableau de bord.
+
+**Inscription sur invitation.** Dans **Plateforme**, créez une invitation et
+envoyez le lien. Il vaut 14 jours et ne sert qu'une fois. Une inscription
+ouverte à tout venant laisserait n'importe qui créer des organisations ; les
+premiers opérateurs se recrutent de toute façon un par un.
+
+**Suspendre** ferme le tableau de bord d'une organisation. Son portail continue
+de servir ses clients — ils ont payé, ils n'y sont pour rien. Couper la vente
+est une décision de facturation, pas une conséquence automatique.
+
+On ne peut pas suspendre sa propre organisation : plus personne ne pourrait
+rouvrir.

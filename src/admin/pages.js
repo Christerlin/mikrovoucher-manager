@@ -53,7 +53,7 @@ adminRouter.get("/admin", requireAdmin, (req, res) => res.redirect("/admin/route
 
 // ------------------------------------------------------------- comptes ----
 adminRouter.get("/admin/users", requireAdmin, requireOwner, async (req, res) => {
-  const users = await listUsers();
+  const users = await listUsers(req.user.tenant_id);
   const moi = req.user || {};
   const jamais = `<span style="color:var(--ink-soft)">jamais</span>`;
 
@@ -145,7 +145,8 @@ adminRouter.post("/admin/users", requireAdmin, requireOwner, async (req, res) =>
     return retour("E-mail requis, et mot de passe d'au moins 10 caractères.");
   }
   if (await getUserByEmail(email)) return retour("Ce compte existe déjà.");
-  await createUser({ email, name, motDePasse: password, role });
+  await createUser({ email, name, motDePasse: password, role,
+    tenantId: req.user.tenant_id });
   return retour(`Compte ${email} créé.`);
 });
 
@@ -236,7 +237,7 @@ function onlinePill(lastSeen) {
 
 // ------------------------------------------------------------- routeurs ----
 adminRouter.get("/admin/routers", requireAdmin, async (req, res) => {
-  const routers = await listRouters();
+  const routers = await listRouters(req.user.tenant_id);
   const rows = routers.map((r) => `
     <tr>
       <td><a href="/admin/routers/${r.id}"><strong>${esc(r.name)}</strong></a></td>
@@ -272,6 +273,7 @@ adminRouter.post("/admin/routers", requireAdmin, requireOwner, async (req, res) 
   if (!name || !/^[a-z0-9-]+$/.test(String(slug || ""))) return res.redirect("/admin/routers");
   try {
     const r = await createRouter({
+      tenantId: req.user.tenant_id,
       name: String(name), slug: String(slug),
       pullToken: generateRouterToken(),
       portalUrl: String(portal_url || ""),
@@ -568,7 +570,7 @@ function bandeauMsg(req) {
 }
 
 adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
-  const router = await getRouter(Number(req.params.id));
+  const router = await getRouter(Number(req.params.id), req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   // Forfaits et vouchers ont leur propre page : les charger ici ferait lire
   // des centaines de lignes pour rien a chaque ouverture de la fiche.
@@ -703,7 +705,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
 
 // Page dediee : commerces qui paient une place sur le portail.
 adminRouter.get("/admin/routers/:id/sponsors", requireAdmin, requireOwner, async (req, res) => {
-  const router = await getRouter(Number(req.params.id));
+  const router = await getRouter(Number(req.params.id), req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const sponsors = await listSponsors(router.id);
 
@@ -785,7 +787,7 @@ adminRouter.get("/admin/routers/:id/sponsors", requireAdmin, requireOwner, async
 
 // Page dediee : fichiers du portail captif.
 adminRouter.get("/admin/routers/:id/files", requireAdmin, requireOwner, async (req, res) => {
-  const router = await getRouter(Number(req.params.id));
+  const router = await getRouter(Number(req.params.id), req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const fichiers = await listPortalFiles(router.id);
 
@@ -858,7 +860,7 @@ adminRouter.get("/admin/routers/:id/files", requireAdmin, requireOwner, async (r
 
 // Page dediee : script a importer sur le routeur.
 adminRouter.get("/admin/routers/:id/agent", requireAdmin, requireOwner, async (req, res) => {
-  const router = await getRouter(Number(req.params.id));
+  const router = await getRouter(Number(req.params.id), req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const base = publicBase(req);
 
@@ -917,8 +919,9 @@ adminRouter.get("/admin/live.js", requireAdmin, (req, res) => {
 adminRouter.get("/admin/api/routers/:id/live", requireAdmin, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const [router, sessions] = await Promise.all([getRouter(id), listSessions(id)]);
+    const router = await getRouter(id, req.user.tenant_id);
     if (!router) return res.status(404).json({ error: "introuvable" });
+    const sessions = await listSessions(id);
     res.json({
       lastSeen: router.last_seen,
       info: router.info || null,
@@ -937,7 +940,7 @@ adminRouter.get("/admin/api/routers/:id/live", requireAdmin, async (req, res) =>
 
 // Page dédiée aux forfaits d'un routeur.
 adminRouter.get("/admin/routers/:id/plans", requireAdmin, requireOwner, async (req, res) => {
-  const router = await getRouter(Number(req.params.id));
+  const router = await getRouter(Number(req.params.id), req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const plans = await listPlans(router.id);
   const active = plans.filter((p) => p.active);
@@ -1038,7 +1041,7 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, requireOwner, async (r
 
 // Page dédiée aux vouchers d'un routeur (la fiche routeur reste légère).
 adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) => {
-  const router = await getRouter(Number(req.params.id));
+  const router = await getRouter(Number(req.params.id), req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const [vouchers, sessions, plans] = await Promise.all([
     listVouchers(router.id, 500), listSessions(router.id), listPlans(router.id),
@@ -1239,7 +1242,7 @@ async function pousserFichier(routerId, portalDir, fichier) {
 
 adminRouter.post("/admin/routers/:id/agent/update", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
-  const router = await getRouter(id);
+  const router = await getRouter(id, req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   await queueCommand(id, "update", {});
   res.redirect(`/admin/routers/${id}/agent?msg=` + encodeURIComponent(
@@ -1248,7 +1251,7 @@ adminRouter.post("/admin/routers/:id/agent/update", requireAdmin, requireOwner, 
 
 adminRouter.post("/admin/routers/:id/trial", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
-  const router = await getRouter(id);
+  const router = await getRouter(id, req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const retour = (m) => res.redirect(`/admin/routers/${id}/plans?msg=` + encodeURIComponent(m));
 
@@ -1266,7 +1269,7 @@ adminRouter.post("/admin/routers/:id/trial", requireAdmin, requireOwner, async (
 adminRouter.post("/admin/routers/:id/sponsors", requireAdmin, requireOwner,
   upload.single("image"), async (req, res) => {
     const id = Number(req.params.id);
-    const router = await getRouter(id);
+    const router = await getRouter(id, req.user.tenant_id);
     if (!router) return res.redirect("/admin/routers");
     const retour = (m) => res.redirect(`/admin/routers/${id}/sponsors?msg=` + encodeURIComponent(m));
 
@@ -1307,7 +1310,7 @@ adminRouter.post("/admin/routers/:id/sponsors/:sid/toggle", requireAdmin, requir
 
 adminRouter.post("/admin/routers/:id/sponsors/:sid/delete", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
-  const router = await getRouter(id);
+  const router = await getRouter(id, req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const supprime = await deleteSponsor(id, Number(req.params.sid));
   // Le logo doit partir du routeur aussi : sinon il resterait un fichier
@@ -1328,7 +1331,7 @@ adminRouter.post("/admin/routers/:id/sponsors/:sid/delete", requireAdmin, requir
 adminRouter.post("/admin/routers/:id/files", requireAdmin, requireOwner,
   upload.array("fichiers", 20), async (req, res) => {
     const id = Number(req.params.id);
-    const router = await getRouter(id);
+    const router = await getRouter(id, req.user.tenant_id);
     if (!router) return res.redirect("/admin/routers");
 
     const retour = (msg) =>
@@ -1378,7 +1381,7 @@ adminRouter.post("/admin/routers/:id/files/:fid/delete", requireAdmin, requireOw
 // plus, le garder afficherait un etat faux.
 adminRouter.post("/admin/routers/:id/files/:fid/unlink", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
-  const router = await getRouter(id);
+  const router = await getRouter(id, req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const fichiers = await listPortalFiles(id);
   const f = fichiers.find((x) => x.id === Number(req.params.fid));
@@ -1392,7 +1395,7 @@ adminRouter.post("/admin/routers/:id/files/:fid/unlink", requireAdmin, requireOw
 
 adminRouter.post("/admin/routers/:id/files/push", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
-  const router = await getRouter(id);
+  const router = await getRouter(id, req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const dossier = cheminPortailValide(router.portal_dir || "hotspot");
   if (!dossier) return res.redirect(`/admin/routers/${id}`);
@@ -1414,7 +1417,7 @@ adminRouter.post("/admin/routers/:id/portal-dir", requireAdmin, requireOwner, as
 });
 
 adminRouter.get("/admin/routers/:id/agent.rsc", requireAdmin, requireOwner, async (req, res) => {
-  const router = await getRouter(Number(req.params.id));
+  const router = await getRouter(Number(req.params.id), req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.setHeader("Content-Disposition", 'attachment; filename="mikrovoucher-agent.rsc"');
@@ -1470,7 +1473,7 @@ adminRouter.post("/admin/routers/:id/plans/restore", requireAdmin, requireOwner,
 
 adminRouter.post("/admin/routers/:id/vouchers", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const router = await getRouter(id);
+  const router = await getRouter(id, req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const plan = await getPlan(id, String((req.body || {}).plan_code || ""));
   const count = Math.min(Math.max(Number((req.body || {}).count || 0), 1), 200);
@@ -1504,7 +1507,7 @@ adminRouter.get("/admin/print", requireAdmin, async (req, res) => {
   const ids = (Array.isArray(brut) ? brut : String(brut || "").split(","))
     .map(Number).filter(Number.isInteger);
   if (ids.length === 0) return res.redirect("/admin/routers");
-  const vouchers = await getVouchersByIds(ids);
+  const vouchers = await getVouchersByIds(ids, req.user.tenant_id);
   // Le nom du réseau vient de l'identité que le routeur rapporte : sans lui, le
   // client tient un code sans savoir à quel WiFi se connecter.
   const reseau = (vouchers[0] && vouchers[0].router_info && vouchers[0].router_info.identity)
@@ -1579,7 +1582,7 @@ adminRouter.post("/admin/restore", requireAdmin, requireOwner,
     if (!data || typeof data !== "object" || !Array.isArray(data.routers)) {
       return retour("Ce fichier n'est pas une sauvegarde Mikrovoucher.");
     }
-    const b = await restaurer(data);
+    const b = await restaurer(data, req.user.tenant_id);
     console.log("[restore]", JSON.stringify(b));
     return retour(
       `Restauration : ${b.routeurs} routeur(s), ${b.forfaits} forfait(s), ` +
@@ -1596,7 +1599,7 @@ adminRouter.post("/admin/reset", requireAdmin, requireOwner, async (req, res) =>
     return retour("Rien effacé : le mot de confirmation ne correspond pas.");
   }
   const avecVouchers = (req.body || {}).vouchers === "1";
-  const { commandes, codes } = await remiseAZero({ vouchers: avecVouchers });
+  const { commandes, codes } = await remiseAZero({ vouchers: avecVouchers, tenantId: req.user.tenant_id });
   console.log(`[reset] ${commandes} commande(s), ${codes} voucher(s)`);
   return retour(avecVouchers
     ? `Remise à zéro : ${commandes} vente(s) et ${codes} code(s) effacés. Les codes sont en cours de retrait des routeurs.`
@@ -1604,7 +1607,7 @@ adminRouter.post("/admin/reset", requireAdmin, requireOwner, async (req, res) =>
 });
 
 adminRouter.get("/admin/backup.json", requireAdmin, requireOwner, async (req, res) => {
-  const data = await dumpAll();
+  const data = await dumpAll(req.user.tenant_id);
   const jour = new Date().toISOString().slice(0, 10);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="mikrovoucher-${jour}.json"`);
@@ -1614,7 +1617,7 @@ adminRouter.get("/admin/backup.json", requireAdmin, requireOwner, async (req, re
 // Export comptable. Séparateur ';' et BOM : Excel en français ouvre le fichier
 // directement, sans passer par l'assistant d'importation.
 adminRouter.get("/admin/export.csv", requireAdmin, requireOwner, async (req, res) => {
-  const ventes = await allSales();
+  const ventes = await allSales(req.user.tenant_id);
   const champ = (v) => {
     const t = v == null ? "" : String(v);
     return /[";\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
@@ -1669,8 +1672,8 @@ adminRouter.get("/admin/orders", requireAdmin, requireOwner, async (req, res) =>
   const jours = Math.min(Math.max(Number(req.query.j) || 30, 7), 90);
   const [orders, parRouteur, fin, cash, stock, parJour, parPlan, parMethode] =
     await Promise.all([
-      listOrders(200), salesSummary(), financeSummary(), cashSummary(),
-      stockByPlan(), salesByDay(jours), salesByPlan(), salesByMethod(),
+      listOrders(200), salesSummary(req.user.tenant_id), financeSummary(req.user.tenant_id), cashSummary(req.user.tenant_id),
+      stockByPlan(req.user.tenant_id), salesByDay(jours), salesByPlan(req.user.tenant_id), salesByMethod(req.user.tenant_id),
     ]);
 
   // Recette globale = paiements en ligne + vouchers de lot effectivement utilisés.

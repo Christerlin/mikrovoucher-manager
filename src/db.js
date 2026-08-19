@@ -134,6 +134,24 @@ export async function initDb() {
     -- les variables d'environnement : impossible de savoir qui avait fait
     -- quoi, et impossible de confier la vente a quelqu'un sans lui ouvrir
     -- les finances.
+    -- Un client du service : l'operateur qui vend du WiFi sur ses routeurs.
+    -- Tout objet appartient a un routeur, et tout routeur a un locataire :
+    -- c'est la seule chose qui separe deux clients.
+    CREATE TABLE IF NOT EXISTS tenants (
+      id            SERIAL PRIMARY KEY,
+      name          TEXT NOT NULL,
+      slug          TEXT NOT NULL UNIQUE,
+      active        BOOLEAN NOT NULL DEFAULT true,
+      -- 'direct' : l'operateur pose ses propres identifiants Pay'm, l'argent
+      -- va chez lui sans nous passer entre les mains. 'central' (encaissement
+      -- par nos soins puis reversement) est prevu par le schema mais pas
+      -- implemente : il ferait de nous un transmetteur de fonds.
+      payout_mode   TEXT NOT NULL DEFAULT 'direct',
+      paym_client_id     TEXT,
+      paym_client_secret TEXT,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     CREATE TABLE IF NOT EXISTS users (
       id            SERIAL PRIMARY KEY,
       email         TEXT NOT NULL UNIQUE,
@@ -206,10 +224,75 @@ export async function initDb() {
     -- Apres la creation de la table, sinon un demarrage sur base neuve
     -- echoue : la colonne serait ajoutee a une table qui n'existe pas encore.
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS recharge_code TEXT;
+    ALTER TABLE users   ADD COLUMN IF NOT EXISTS tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE;
+    ALTER TABLE routers ADD COLUMN IF NOT EXISTS tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE;
+    CREATE INDEX IF NOT EXISTS routers_tenant_idx ON routers (tenant_id);
+    CREATE INDEX IF NOT EXISTS users_tenant_idx   ON users (tenant_id);
     CREATE INDEX IF NOT EXISTS orders_status_idx ON orders (status);
     CREATE INDEX IF NOT EXISTS orders_handoff_idx
       ON orders (handoff_hash) WHERE handoff_hash IS NOT NULL;
   `);
+}
+
+// Rattache a un locataire ce qui n'en a pas : une installation existante
+// devient le premier client du service, sans rien perdre. Idempotent.
+export async function backfillTenants() {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: orphelins } = await client.query(
+      `SELECT (SELECT count(*) FROM routers WHERE tenant_id IS NULL)::int AS r,
+              (SELECT count(*) FROM users   WHERE tenant_id IS NULL)::int AS u`);
+    if (orphelins[0].r === 0 && orphelins[0].u === 0) {
+      await client.query("COMMIT");
+      return null;
+    }
+    // Le locataire par defaut porte le nom du premier routeur : sur une
+    // installation existante, c'est celui que l'exploitant reconnaitra.
+    const { rows: premier } = await client.query(
+      `SELECT name, slug FROM routers ORDER BY id LIMIT 1`);
+    const nom = premier[0] ? premier[0].name : "Mon réseau";
+    const slug = premier[0] ? premier[0].slug : "principal";
+    const { rows: t } = await client.query(
+      `INSERT INTO tenants (name, slug) VALUES ($1,$2)
+       ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+       RETURNING id`, [nom, slug]);
+    const id = t[0].id;
+    await client.query(`UPDATE routers SET tenant_id = $1 WHERE tenant_id IS NULL`, [id]);
+    await client.query(`UPDATE users   SET tenant_id = $1 WHERE tenant_id IS NULL`, [id]);
+    await client.query("COMMIT");
+    return { id, nom, routeurs: orphelins[0].r, comptes: orphelins[0].u };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getTenant(id) {
+  const { rows } = await pool.query(`SELECT * FROM tenants WHERE id = $1`, [id]);
+  return rows[0] || null;
+}
+
+// Identifiants Pay'm du locataire qui possede ce routeur. Repli sur les
+// variables d'environnement : l'installation d'origine continue de marcher
+// telle quelle, sans rien saisir.
+export async function paymDuRouteur(routerId) {
+  const { rows } = await pool.query(
+    `SELECT t.payout_mode, t.paym_client_id, t.paym_client_secret
+       FROM routers r JOIN tenants t ON t.id = r.tenant_id
+      WHERE r.id = $1`, [routerId]);
+  return rows[0] || null;
+}
+
+export async function setTenantPaym(id, { clientId, clientSecret }) {
+  // Un secret vide ne doit pas effacer celui en place : on ne le reaffiche
+  // jamais, l'operateur ne peut donc pas le retaper a chaque fois.
+  await pool.query(
+    `UPDATE tenants SET paym_client_id = $2,
+            paym_client_secret = COALESCE(NULLIF($3, ''), paym_client_secret)
+      WHERE id = $1`, [id, clientId || null, clientSecret || ""]);
 }
 
 // Les forfaits créés avant l'expiration calendaire ont validity_seconds = 0
@@ -243,11 +326,11 @@ export async function vouchersDejaEchus() {
 }
 
 // ---------------------------------------------------------------- routers --
-export async function listRouters() {
+export async function listRouters(tenantId) {
   const { rows } = await pool.query(
     `SELECT r.*,
             (SELECT count(*) FROM commands c WHERE c.router_id = r.id AND c.status='PENDING') AS pending_commands
-       FROM routers r ORDER BY r.id`);
+       FROM routers r WHERE r.tenant_id = $1 ORDER BY r.id`, [tenantId]);
   return rows;
 }
 // Routeurs qui ne rapportent plus. L'agent passe toutes les 15 s : au-delà de
@@ -264,8 +347,14 @@ export async function routersSilencieux(secondes) {
   return rows;
 }
 
-export async function getRouter(id) {
-  const { rows } = await pool.query(`SELECT * FROM routers WHERE id = $1`, [id]);
+export async function getRouter(id, tenantId) {
+  // tenantId est obligatoire cote dashboard : sans lui, un identifiant deviné
+  // dans l'URL ouvrirait le routeur d'un autre client. Les appels internes
+  // qui n'ont pas de locataire passent explicitement null.
+  const { rows } = tenantId == null
+    ? await pool.query(`SELECT * FROM routers WHERE id = $1`, [id])
+    : await pool.query(`SELECT * FROM routers WHERE id = $1 AND tenant_id = $2`,
+        [id, tenantId]);
   return rows[0] || null;
 }
 export async function getRouterBySlug(slug) {
@@ -276,10 +365,11 @@ export async function getRouterByToken(token) {
   const { rows } = await pool.query(`SELECT * FROM routers WHERE pull_token = $1`, [token]);
   return rows[0] || null;
 }
-export async function createRouter({ slug, name, pullToken, portalUrl }) {
+export async function createRouter({ slug, name, pullToken, portalUrl, tenantId }) {
   const { rows } = await pool.query(
-    `INSERT INTO routers (slug, name, pull_token, portal_url) VALUES ($1,$2,$3,$4) RETURNING *`,
-    [slug, name, pullToken, portalUrl || ""]);
+    `INSERT INTO routers (slug, name, pull_token, portal_url, tenant_id)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [slug, name, pullToken, portalUrl || "", tenantId || null]);
   return rows[0];
 }
 export async function touchRouter(id) {
@@ -411,10 +501,10 @@ export async function compterUtilisateurs() {
   return rows[0].n;
 }
 
-export async function listUsers() {
+export async function listUsers(tenantId) {
   const { rows } = await pool.query(
     `SELECT id, email, name, role, active, created_at, last_login
-       FROM users ORDER BY active DESC, email`);
+       FROM users WHERE tenant_id = $1 ORDER BY active DESC, email`, [tenantId]);
   return rows;
 }
 
@@ -429,11 +519,13 @@ export async function getUserByEmail(email) {
   return rows[0] || null;
 }
 
-export async function createUser({ email, name, motDePasse, role }) {
+export async function createUser({ email, name, motDePasse, role, tenantId }) {
   const { rows } = await pool.query(
-    `INSERT INTO users (email, name, pass_hash, role) VALUES ($1,$2,$3,$4) RETURNING *`,
+    `INSERT INTO users (email, name, pass_hash, role, tenant_id)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
     [String(email).trim(), String(name || "").trim(),
-     hacherMotDePasse(motDePasse), role === "owner" ? "owner" : "vendeur"]);
+     hacherMotDePasse(motDePasse), role === "owner" ? "owner" : "vendeur",
+     tenantId || null]);
   return rows[0];
 }
 
@@ -450,9 +542,13 @@ export async function touchUserLogin(id) {
 // d'eux : sert a refuser la modification qui fermerait la porte a tout le
 // monde. Un dashboard sans proprietaire ne se recupere que par la base.
 async function autresProprietaires(client, saufId) {
+  // Compte dans le meme locataire : le proprietaire d'un autre client du
+  // service ne peut evidemment pas reprendre la main ici.
   const { rows } = await client.query(
     `SELECT count(*)::int AS n FROM users
-      WHERE role = 'owner' AND active AND id <> $1`, [saufId]);
+      WHERE role = 'owner' AND active AND id <> $1
+        AND tenant_id IS NOT DISTINCT FROM
+            (SELECT tenant_id FROM users WHERE id = $1)`, [saufId]);
   return rows[0].n;
 }
 
@@ -668,7 +764,7 @@ export function secondesEnDuree(sec) {
 // rapproche par slug (routeurs), par code (forfaits, vouchers) et par
 // reference (ventes). Le jeton d'un routeur ne figure pas dans la sauvegarde
 // — un routeur recree en obtient un neuf, et son script doit etre reimporte.
-export async function restaurer(data) {
+export async function restaurer(data, tenantId) {
   const bilan = { routeurs: 0, forfaits: 0, vouchers: 0, ventes: 0, ignores: 0 };
   const client = await pool.connect();
   try {
@@ -677,12 +773,15 @@ export async function restaurer(data) {
     const mapRouteur = new Map();   // ancien id -> nouvel id
     for (const r of data.routers || []) {
       if (!r.slug) { bilan.ignores += 1; continue; }
-      let { rows } = await client.query(`SELECT id FROM routers WHERE slug = $1`, [r.slug]);
+      // Rapprochement dans le locataire seulement : deux clients du service
+      // peuvent avoir un routeur de meme nom sans se marcher dessus.
+      let { rows } = await client.query(
+        `SELECT id FROM routers WHERE slug = $1 AND tenant_id = $2`, [r.slug, tenantId]);
       if (rows.length === 0) {
         const ins = await client.query(
-          `INSERT INTO routers (slug, name, pull_token, portal_url)
-           VALUES ($1,$2,$3,$4) RETURNING id`,
-          [r.slug, r.name || r.slug, generateRouterToken(), r.portal_url || ""]);
+          `INSERT INTO routers (slug, name, pull_token, portal_url, tenant_id)
+           VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+          [r.slug, r.name || r.slug, generateRouterToken(), r.portal_url || "", tenantId]);
         rows = ins.rows;
         bilan.routeurs += 1;
       }
@@ -756,25 +855,35 @@ export async function restaurer(data) {
 // Pensee pour la fin des tests : on repart sur des chiffres vrais. Les codes
 // supprimes sont retires du routeur, sinon ils resteraient utilisables alors
 // qu'ils ont disparu du manager.
-export async function remiseAZero({ vouchers = false } = {}) {
+export async function remiseAZero({ vouchers = false, tenantId } = {}) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const { rowCount: commandes } = await client.query(`DELETE FROM orders`);
+    // Borne au locataire : sinon un client du service effacerait la
+    // comptabilite de tous les autres.
+    const { rowCount: commandes } = await client.query(
+      `DELETE FROM orders o USING routers r
+        WHERE r.id = o.router_id AND r.tenant_id = $1`, [tenantId]);
 
     let codes = 0;
     if (vouchers) {
       // Les remove partent AVANT la suppression : une fois la ligne partie,
       // on ne saurait plus quel compte retirer du routeur.
-      const { rows } = await client.query(`SELECT router_id, code FROM vouchers`);
+      const { rows } = await client.query(
+        `SELECT v.router_id, v.code FROM vouchers v
+           JOIN routers r ON r.id = v.router_id WHERE r.tenant_id = $1`, [tenantId]);
       for (const v of rows) {
         await client.query(
           `INSERT INTO commands (router_id, action, payload) VALUES ($1,'remove',$2)`,
           [v.router_id, { code: v.code }]);
       }
       // Le lien orders -> vouchers est deja tombe avec les commandes.
-      await client.query(`UPDATE vouchers SET command_id = NULL`);
-      const r = await client.query(`DELETE FROM vouchers`);
+      await client.query(
+        `UPDATE vouchers v SET command_id = NULL
+          FROM routers r WHERE r.id = v.router_id AND r.tenant_id = $1`, [tenantId]);
+      const r = await client.query(
+        `DELETE FROM vouchers v USING routers r
+          WHERE r.id = v.router_id AND r.tenant_id = $1`, [tenantId]);
       codes = r.rowCount;
     }
     await client.query("COMMIT");
@@ -966,14 +1075,14 @@ export async function listVouchers(routerId, limit = 100) {
     [routerId, limit]);
   return rows;
 }
-export async function getVouchersByIds(ids) {
+export async function getVouchersByIds(ids, tenantId) {
   const { rows } = await pool.query(
     `SELECT v.*, p.label AS plan_label, p.price_htg, p.shared_users,
             r.name AS router_name, r.info AS router_info
        FROM vouchers v
        LEFT JOIN plans p ON p.id = v.plan_id
        JOIN routers r ON r.id = v.router_id
-      WHERE v.id = ANY($1) ORDER BY v.id`, [ids]);
+      WHERE v.id = ANY($1) AND r.tenant_id = $2 ORDER BY v.id`, [ids, tenantId]);
   return rows;
 }
 
@@ -1142,7 +1251,7 @@ export async function getVoucherById(id) {
   const { rows } = await pool.query(`SELECT * FROM vouchers WHERE id = $1`, [id]);
   return rows[0] || null;
 }
-export async function listOrders(limit = 200) {
+export async function listOrders(tenantId, limit = 200) {
   const { rows } = await pool.query(
     `SELECT o.*, r.name AS router_name, p.label AS plan_label,
             v.code AS voucher_code
@@ -1150,7 +1259,8 @@ export async function listOrders(limit = 200) {
        JOIN routers r ON r.id = o.router_id
        JOIN plans p ON p.id = o.plan_id
        LEFT JOIN vouchers v ON v.id = o.voucher_id
-      ORDER BY o.created_at DESC LIMIT $1`, [limit]);
+      WHERE r.tenant_id = $1
+      ORDER BY o.created_at DESC LIMIT $2`, [tenantId, limit]);
   return rows;
 }
 // --- Finances ---------------------------------------------------------------
@@ -1158,6 +1268,9 @@ export async function listOrders(limit = 200) {
 // "aujourd'hui" bascule 5 h trop tôt (la base stocke en UTC).
 const TZ = process.env.BUSINESS_TZ || "America/Port-au-Prince";
 const PAID = "status IN ('PAID','DELIVERED')";
+// Meme condition, qualifiee : des qu'on joint orders a routers, `status` seul
+// devient ambigu.
+const PAIDO = "o.status IN ('PAID','DELIVERED')";
 
 // Recette "espèces" : un voucher d'un lot qui a servi a forcément été vendu.
 // C'est le seul indice fiable dont on dispose pour les ventes de la main à la
@@ -1165,9 +1278,11 @@ const PAID = "status IN ('PAID','DELIVERED')";
 const CASH = `
   SELECT v.used_at AS at, p.price_htg AS htg
     FROM vouchers v JOIN plans p ON p.id = v.plan_id
-   WHERE v.source = 'batch' AND v.used_at IS NOT NULL`;
+    JOIN routers r ON r.id = v.router_id
+   WHERE v.source = 'batch' AND v.used_at IS NOT NULL
+     AND r.tenant_id = $2`;
 
-export async function cashSummary() {
+export async function cashSummary(tenantId) {
   const { rows } = await pool.query(`
     WITH c AS (${CASH}), j AS (SELECT (now() AT TIME ZONE $1)::date AS today)
     SELECT
@@ -1178,12 +1293,12 @@ export async function cashSummary() {
       COALESCE(SUM(htg) FILTER (WHERE (at AT TIME ZONE $1)::date > j.today - 7),0)::int AS week_htg,
       COALESCE(SUM(htg) FILTER (WHERE date_trunc('month', at AT TIME ZONE $1)
               = date_trunc('month', j.today)),0)::int AS month_htg
-    FROM c, j`, [TZ]);
+    FROM c, j`, [TZ, tenantId]);
   return rows[0];
 }
 
 // Vouchers d'un lot restant à vendre, par forfait : ce qu'il reste en stock.
-export async function stockByPlan() {
+export async function stockByPlan(tenantId) {
   const { rows } = await pool.query(`
     SELECT p.label, r.name AS router_name, p.price_htg,
            COUNT(*)::int AS restants
@@ -1191,35 +1306,38 @@ export async function stockByPlan() {
       JOIN plans p ON p.id = v.plan_id
       JOIN routers r ON r.id = v.router_id
      WHERE v.source = 'batch' AND v.used_at IS NULL
+       AND r.tenant_id = $1
      GROUP BY p.label, r.name, p.price_htg
-     ORDER BY restants DESC`);
+     ORDER BY restants DESC`, [tenantId]);
   return rows;
 }
 
-export async function financeSummary() {
+export async function financeSummary(tenantId) {
   const { rows } = await pool.query(`
     WITH j AS (SELECT (now() AT TIME ZONE $1)::date AS today)
     SELECT
-      COALESCE(SUM(amount_htg) FILTER (WHERE ${PAID}),0)::int AS total_htg,
-      COUNT(*) FILTER (WHERE ${PAID})::int AS total_count,
-      COALESCE(SUM(amount_htg) FILTER (WHERE ${PAID}
-        AND (created_at AT TIME ZONE $1)::date = j.today),0)::int AS today_htg,
-      COUNT(*) FILTER (WHERE ${PAID}
-        AND (created_at AT TIME ZONE $1)::date = j.today)::int AS today_count,
-      COALESCE(SUM(amount_htg) FILTER (WHERE ${PAID}
-        AND (created_at AT TIME ZONE $1)::date > j.today - 7),0)::int AS week_htg,
-      COALESCE(SUM(amount_htg) FILTER (WHERE ${PAID}
-        AND date_trunc('month', created_at AT TIME ZONE $1)
+      COALESCE(SUM(o.amount_htg) FILTER (WHERE ${PAIDO}),0)::int AS total_htg,
+      COUNT(*) FILTER (WHERE ${PAIDO})::int AS total_count,
+      COALESCE(SUM(o.amount_htg) FILTER (WHERE ${PAIDO}
+        AND (o.created_at AT TIME ZONE $1)::date = j.today),0)::int AS today_htg,
+      COUNT(*) FILTER (WHERE ${PAIDO}
+        AND (o.created_at AT TIME ZONE $1)::date = j.today)::int AS today_count,
+      COALESCE(SUM(o.amount_htg) FILTER (WHERE ${PAIDO}
+        AND (o.created_at AT TIME ZONE $1)::date > j.today - 7),0)::int AS week_htg,
+      COALESCE(SUM(o.amount_htg) FILTER (WHERE ${PAIDO}
+        AND date_trunc('month', o.created_at AT TIME ZONE $1)
             = date_trunc('month', j.today)),0)::int AS month_htg,
-      COUNT(*) FILTER (WHERE status = 'PENDING')::int AS pending_count,
-      COUNT(*) FILTER (WHERE status = 'EXPIRED')::int AS expired_count
-    FROM orders, j`, [TZ]);
+      COUNT(*) FILTER (WHERE o.status = 'PENDING')::int AS pending_count,
+      COUNT(*) FILTER (WHERE o.status = 'EXPIRED')::int AS expired_count
+    FROM orders o
+    JOIN routers r ON r.id = o.router_id, j
+    WHERE r.tenant_id = $2`, [TZ, tenantId]);
   return rows[0];
 }
 
 // Recette par jour sur une fenêtre glissante, jours vides inclus (sinon le
 // graphique ment en resserrant les jours sans vente).
-export async function salesByDay(days = 30) {
+export async function salesByDay(tenantId, days = 30) {
   const { rows } = await pool.query(`
     WITH bornes AS (
       SELECT generate_series(
@@ -1228,30 +1346,34 @@ export async function salesByDay(days = 30) {
         '1 day')::date AS jour
     ),
     ventes AS (
-      SELECT (created_at AT TIME ZONE $1)::date AS jour, amount_htg AS htg
-        FROM orders WHERE ${PAID}
+      SELECT (o.created_at AT TIME ZONE $1)::date AS jour, o.amount_htg AS htg
+        FROM orders o JOIN routers r ON r.id = o.router_id
+       WHERE ${PAIDO} AND r.tenant_id = $3
       UNION ALL
       SELECT (v.used_at AT TIME ZONE $1)::date, p.price_htg
         FROM vouchers v JOIN plans p ON p.id = v.plan_id
-       WHERE v.source = 'batch' AND v.used_at IS NOT NULL
+        JOIN routers r ON r.id = v.router_id
+       WHERE v.source = 'batch' AND v.used_at IS NOT NULL AND r.tenant_id = $3
     )
     SELECT b.jour,
            COALESCE(SUM(x.htg),0)::int AS htg,
            COUNT(x.*)::int AS ventes
       FROM bornes b LEFT JOIN ventes x ON x.jour = b.jour
-     GROUP BY b.jour ORDER BY b.jour`, [TZ, days]);
+     GROUP BY b.jour ORDER BY b.jour`, [TZ, days, tenantId]);
   return rows;
 }
 
-export async function salesByPlan() {
+export async function salesByPlan(tenantId) {
   const { rows } = await pool.query(`
     WITH tout AS (
       SELECT o.plan_id, o.router_id, o.amount_htg AS htg, 'en ligne' AS canal
-        FROM orders o WHERE ${PAID}
+        FROM orders o JOIN routers r ON r.id = o.router_id
+       WHERE ${PAIDO} AND r.tenant_id = $1
       UNION ALL
       SELECT v.plan_id, v.router_id, p.price_htg, 'espèces'
         FROM vouchers v JOIN plans p ON p.id = v.plan_id
-       WHERE v.source = 'batch' AND v.used_at IS NOT NULL
+        JOIN routers r ON r.id = v.router_id
+       WHERE v.source = 'batch' AND v.used_at IS NOT NULL AND r.tenant_id = $1
     )
     SELECT p.label, r.name AS router_name,
            COUNT(*)::int AS ventes,
@@ -1262,21 +1384,22 @@ export async function salesByPlan() {
       JOIN plans p ON p.id = t.plan_id
       JOIN routers r ON r.id = t.router_id
      GROUP BY p.label, r.name
-     ORDER BY htg DESC`);
+     ORDER BY htg DESC`, [tenantId]);
   return rows;
 }
 
-export async function salesByMethod() {
+export async function salesByMethod(tenantId) {
   const { rows } = await pool.query(`
-    SELECT method, COUNT(*)::int AS ventes,
-           COALESCE(SUM(amount_htg),0)::int AS htg
-      FROM orders WHERE ${PAID}
-     GROUP BY method ORDER BY htg DESC`);
+    SELECT o.method, COUNT(*)::int AS ventes,
+           COALESCE(SUM(o.amount_htg),0)::int AS htg
+      FROM orders o JOIN routers r ON r.id = o.router_id
+     WHERE ${PAIDO} AND r.tenant_id = $1
+     GROUP BY o.method ORDER BY htg DESC`, [tenantId]);
   return rows;
 }
 
 // Toutes les ventes, tous canaux, pour l'export comptable.
-export async function allSales() {
+export async function allSales(tenantId) {
   const { rows } = await pool.query(`
     SELECT o.created_at AS date, r.name AS routeur, p.label AS forfait,
            o.amount_htg AS montant, 'en ligne' AS canal, o.method AS moyen,
@@ -1284,43 +1407,50 @@ export async function allSales() {
            (SELECT code FROM vouchers WHERE id = o.voucher_id) AS code
       FROM orders o JOIN routers r ON r.id = o.router_id
       JOIN plans p ON p.id = o.plan_id
-     WHERE ${PAID}
+     WHERE ${PAIDO} AND r.tenant_id = $1
     UNION ALL
     SELECT v.used_at, r.name, p.label, p.price_htg, 'espèces', 'espèces',
            '', 'utilisé', v.code
       FROM vouchers v JOIN routers r ON r.id = v.router_id
       JOIN plans p ON p.id = v.plan_id
-     WHERE v.source = 'batch' AND v.used_at IS NOT NULL
-    ORDER BY date DESC`);
+     WHERE v.source = 'batch' AND v.used_at IS NOT NULL AND r.tenant_id = $1
+    ORDER BY date DESC`, [tenantId]);
   return rows;
 }
 
-export async function salesSummary() {
+export async function salesSummary(tenantId) {
   const { rows } = await pool.query(
     `SELECT r.name AS router_name,
             count(*) FILTER (WHERE o.status IN ('PAID','DELIVERED')) AS paid_count,
             COALESCE(sum(o.amount_htg) FILTER (WHERE o.status IN ('PAID','DELIVERED')), 0) AS total_htg
        FROM orders o JOIN routers r ON r.id = o.router_id
-      GROUP BY r.name ORDER BY total_htg DESC`);
+      WHERE r.tenant_id = $1
+      GROUP BY r.name ORDER BY total_htg DESC`, [tenantId]);
   return rows;
 }
 
 // Sauvegarde complète, portable : de quoi tout reconstruire si la base est
 // perdue (l'offre gratuite d'un hébergeur n'est pas une sauvegarde).
-export async function dumpAll() {
-  const t = async (sql) => (await pool.query(sql)).rows;
+export async function dumpAll(tenantId) {
+  const t = async (sql) => (await pool.query(sql, [tenantId])).rows;
   const [routers, plans, vouchers, orders] = await Promise.all([
-    t(`SELECT id, slug, name, portal_url, last_seen, created_at FROM routers ORDER BY id`),
-    t(`SELECT * FROM plans ORDER BY id`),
-    t(`SELECT * FROM vouchers ORDER BY id`),
-    t(`SELECT * FROM orders ORDER BY created_at`),
+    t(`SELECT id, slug, name, portal_url, last_seen, created_at
+         FROM routers WHERE tenant_id = $1 ORDER BY id`),
+    t(`SELECT p.* FROM plans p JOIN routers r ON r.id = p.router_id
+        WHERE r.tenant_id = $1 ORDER BY p.id`),
+    t(`SELECT v.* FROM vouchers v JOIN routers r ON r.id = v.router_id
+        WHERE r.tenant_id = $1 ORDER BY v.id`),
+    t(`SELECT o.* FROM orders o JOIN routers r ON r.id = o.router_id
+        WHERE r.tenant_id = $1 ORDER BY o.created_at`),
   ]);
   return {
     version: 1,
     genere_le: new Date().toISOString(),
     // Les jetons des routeurs sont volontairement exclus : une sauvegarde
     // circule (mail, clé USB) et ne doit pas donner la main sur un routeur.
-    note: "pull_token exclu — régénérer un routeur si besoin",
+    // Les identifiants Pay'm sont exclus au meme titre : une sauvegarde
+    // circule, et ceux-la donnent acces a l'encaissement.
+    note: "pull_token et identifiants Pay'm exclus",
     routers, plans, vouchers, orders,
   };
 }

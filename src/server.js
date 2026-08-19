@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { config } from "./config.js";
-import { initDb, backfillPlanValidity, vouchersDejaEchus, routersSilencieux } from "./db.js";
+import { initDb, backfillTenants, backfillPlanValidity, vouchersDejaEchus, routersSilencieux } from "./db.js";
 import { portalRouter, reconcile } from "./portal.js";
 import { agentRouter } from "./agent.js";
 import { adminRouter } from "./admin/pages.js";
@@ -82,6 +82,10 @@ process.on("uncaughtException", (err) =>
 
 async function main() {
   await initDb();
+  const rattaches = await backfillTenants();
+  if (rattaches) {
+    console.log(`[tenants] « ${rattaches.nom} » créé : ${rattaches.routeurs} routeur(s), ${rattaches.comptes} compte(s) rattachés`);
+  }
   const majores = await backfillPlanValidity();
   if (majores > 0) {
     const echus = await vouchersDejaEchus();

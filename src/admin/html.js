@@ -9,7 +9,7 @@ export function esc(s) {
 
 // `side` : menu vertical d'une section (les pages d'un meme routeur, par
 // exemple). Il evite la page fourre-tout ou tout s'empile.
-export function layout(title, body, { active = "", side = null } = {}) {
+export function layout(title, body, { active = "", side = null, user = null } = {}) {
   const nav = [
     ["/admin/routers", "Routeurs", "routers"],
     ["/admin/orders", "Ventes", "orders"],
@@ -89,6 +89,8 @@ header nav{display:flex;gap:4px;flex:1}
 header nav a{padding:7px 14px;border-radius:999px;text-decoration:none;color:var(--ink-soft);font-size:14px;font-weight:600}
 header nav a.on{background:var(--accent);color:#fff}
 header form{margin:0}
+.qui{font-size:12px;color:var(--ink-soft);font-weight:600;max-width:170px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #sideBtn{padding:6px 11px;font-size:15px;line-height:1;border:1.5px solid var(--line)}
 #themeBtn{background:transparent;border:1.5px solid var(--line);color:var(--ink-soft);
   padding:7px 12px;line-height:1;font-size:15px}
@@ -187,6 +189,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   .side a{white-space:nowrap}
   .side-title{display:none}
   .side-sep{width:1px;height:auto;margin:2px 4px}
+  .qui{display:none}
   main.with-side{max-width:1000px}
 }
 
@@ -223,6 +226,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
       title="Afficher ou masquer le menu" aria-label="Afficher ou masquer le menu">&#9776;</button>` : ""}
   <span class="brand">Mikrovoucher</span>
   <nav>${nav}</nav>
+  ${user ? `<span class="qui" title="${esc(user.role === "owner" ? "Propriétaire" : "Vendeur")}">${esc(user.email)}</span>` : ""}
   <button id="themeBtn" type="button" title="Changer de thème" aria-label="Changer de thème">◐</button>
   <form method="post" action="/admin/logout"><button class="ghost">Quitter</button></form>
 </header>

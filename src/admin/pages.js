@@ -15,10 +15,13 @@ import {
   deletePortalFile, setPortalDir,
   listSponsors, createSponsor, setSponsorImage, toggleSponsor, deleteSponsor,
   dureeRouterOsValide, setTrial, remiseAZero, restaurer,
+  listUsers, createUser, getUserById, getUserByEmail, updateUser,
+  deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
 import { generateRouterToken, generateVoucherCode, durationToSeconds } from "../codes.js";
 import { layout, esc } from "./html.js";
-import { requireAdmin, loginPage, handleLogin, handleLogout } from "./auth.js";
+import { requireAdmin, requireOwner, loginPage, handleLogin, handleLogout,
+         reposerSession } from "./auth.js";
 
 export const adminRouter = Router();
 
@@ -47,6 +50,149 @@ adminRouter.get("/admin/login", (req, res) => loginPage(res));
 adminRouter.post("/admin/login", handleLogin);
 adminRouter.post("/admin/logout", handleLogout);
 adminRouter.get("/admin", requireAdmin, (req, res) => res.redirect("/admin/routers"));
+
+// ------------------------------------------------------------- comptes ----
+adminRouter.get("/admin/users", requireAdmin, requireOwner, async (req, res) => {
+  const users = await listUsers();
+  const moi = req.user || {};
+  const jamais = `<span style="color:var(--ink-soft)">jamais</span>`;
+
+  const rows = users.map((u) => `
+    <tr>
+      <td><strong>${esc(u.email)}</strong>
+        ${u.name ? `<div style="font-size:12px;color:var(--ink-soft)">${esc(u.name)}</div>` : ""}</td>
+      <td>${u.role === "owner"
+            ? `<span class="pill ok">Propriétaire</span>`
+            : `<span class="pill wait">Vendeur</span>`}</td>
+      <td>${u.active ? "actif" : `<span style="color:var(--ink-soft)">désactivé</span>`}</td>
+      <td style="font-size:12px;color:var(--ink-soft)">
+        ${u.last_login ? new Date(u.last_login).toLocaleString("fr-FR") : jamais}</td>
+      <td style="text-align:right;white-space:nowrap">
+        ${u.id === moi.id ? `<span style="color:var(--ink-soft);font-size:12px">c'est vous</span>` : `
+        <form method="post" style="display:inline" action="/admin/users/${u.id}/role">
+          <input type="hidden" name="role" value="${u.role === "owner" ? "vendeur" : "owner"}">
+          <button class="btn ghost" type="submit">${u.role === "owner" ? "Passer vendeur" : "Passer propriétaire"}</button>
+        </form>
+        <form method="post" style="display:inline" action="/admin/users/${u.id}/active">
+          <input type="hidden" name="active" value="${u.active ? "0" : "1"}">
+          <button class="btn ghost" type="submit">${u.active ? "Désactiver" : "Réactiver"}</button>
+        </form>
+        <form method="post" style="display:inline" action="/admin/users/${u.id}/delete"
+              data-confirm="Supprimer le compte ${esc(u.email)} ?">
+          <button class="danger" type="submit">Supprimer</button>
+        </form>`}
+      </td>
+    </tr>`).join("");
+
+  res.type("html").send(layout("Comptes", `
+    <h1>Comptes</h1>
+    <p class="sub">Qui peut entrer dans ce dashboard, et jusqu'où.</p>
+    ${bandeauMsg(req)}
+    ${moi.bootstrap ? `
+      <div class="card" style="border-color:var(--warn)">
+        <strong>Vous êtes entré avec le mot de passe de secours.</strong>
+        <p class="sub" style="margin:8px 0 0">Créez votre compte propriétaire
+        ci-dessous. Dès qu'un compte existe, le mot de passe d'administration
+        cesse d'ouvrir le dashboard — le laisser vivre en ferait une porte
+        dérobée permanente.</p>
+      </div>` : ""}
+
+    <div class="card">
+      <table>
+        <tr><th>Compte</th><th>Rôle</th><th>État</th><th>Dernière entrée</th><th></th></tr>
+        ${rows || `<tr><td colspan="5" style="color:var(--ink-soft)">Aucun compte.</td></tr>`}
+      </table>
+      <p class="sub" style="margin:12px 0 0"><strong>Propriétaire</strong> : tout,
+      y compris les finances, les réglages et les suppressions.
+      <strong>Vendeur</strong> : voir les clients connectés, générer et imprimer
+      des codes. Ni caisse, ni réglages, ni suppression.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Ajouter un compte</h2>
+      <form class="inline" method="post" action="/admin/users">
+        <label>E-mail <input type="email" name="email" required size="22"></label>
+        <label>Nom <input name="name" size="16" placeholder="Facultatif"></label>
+        <label>Mot de passe <input type="password" name="password" required minlength="10" size="16"></label>
+        <label>Rôle
+          <select name="role">
+            <option value="vendeur">Vendeur</option>
+            <option value="owner">Propriétaire</option>
+          </select></label>
+        <button type="submit">Créer</button>
+      </form>
+      <p class="sub" style="margin:12px 0 0">Dix caractères au minimum. Le mot
+      de passe n'est pas stocké : seule une empreinte scrypt l'est, avec un sel
+      propre à chaque compte.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Changer mon mot de passe</h2>
+      ${moi.bootstrap
+        ? `<p class="sub" style="margin:0">L'accès de secours n'a pas de mot de passe à changer.</p>`
+        : `<form class="inline" method="post" action="/admin/users/moi/password">
+        <label>Mot de passe actuel <input type="password" name="actuel" required size="18"></label>
+        <label>Nouveau <input type="password" name="nouveau" required minlength="10" size="18"></label>
+        <button type="submit">Changer</button>
+      </form>`}
+    </div>`, { active: "users", user: req.user, side: menuGeneral("g-comptes", req.user) }));
+});
+
+adminRouter.post("/admin/users", requireAdmin, requireOwner, async (req, res) => {
+  const retour = (m) => res.redirect("/admin/users?msg=" + encodeURIComponent(m));
+  const { email, name, password, role } = req.body || {};
+  if (!email || String(password || "").length < 10) {
+    return retour("E-mail requis, et mot de passe d'au moins 10 caractères.");
+  }
+  if (await getUserByEmail(email)) return retour("Ce compte existe déjà.");
+  await createUser({ email, name, motDePasse: password, role });
+  return retour(`Compte ${email} créé.`);
+});
+
+adminRouter.post("/admin/users/:id/role", requireAdmin, requireOwner, async (req, res) => {
+  const retour = (m) => res.redirect("/admin/users?msg=" + encodeURIComponent(m));
+  const role = (req.body || {}).role === "owner" ? "owner" : "vendeur";
+  const r = await updateUser(Number(req.params.id), { role });
+  return retour(r.ok ? "Rôle modifié."
+    : r.raison === "dernier-proprietaire"
+      ? "Refusé : c'est le dernier propriétaire actif. Nommez-en un autre d'abord."
+      : "Compte introuvable.");
+});
+
+adminRouter.post("/admin/users/:id/active", requireAdmin, requireOwner, async (req, res) => {
+  const retour = (m) => res.redirect("/admin/users?msg=" + encodeURIComponent(m));
+  const actif = (req.body || {}).active === "1";
+  const r = await updateUser(Number(req.params.id), { active: actif });
+  return retour(r.ok ? (actif ? "Compte réactivé." : "Compte désactivé.")
+    : r.raison === "dernier-proprietaire"
+      ? "Refusé : c'est le dernier propriétaire actif. Nommez-en un autre d'abord."
+      : "Compte introuvable.");
+});
+
+adminRouter.post("/admin/users/:id/delete", requireAdmin, requireOwner, async (req, res) => {
+  const retour = (m) => res.redirect("/admin/users?msg=" + encodeURIComponent(m));
+  const r = await deleteUser(Number(req.params.id));
+  return retour(r.ok ? "Compte supprimé."
+    : r.raison === "dernier-proprietaire"
+      ? "Refusé : c'est le dernier propriétaire actif."
+      : "Compte introuvable.");
+});
+
+adminRouter.post("/admin/users/moi/password", requireAdmin, async (req, res) => {
+  const retour = (m) => res.redirect("/admin/users?msg=" + encodeURIComponent(m));
+  const moi = req.user;
+  if (!moi || !moi.id) return retour("L'accès de secours n'a pas de mot de passe.");
+  const { actuel, nouveau } = req.body || {};
+  if (!verifierMotDePasse(String(actuel || ""), moi.pass_hash)) {
+    return retour("Mot de passe actuel incorrect.");
+  }
+  if (String(nouveau || "").length < 10) return retour("Au moins 10 caractères.");
+  await setUserPassword(moi.id, nouveau);
+  // La signature du cookie couvre l'empreinte : sans ce renouvellement, on
+  // serait deconnecte a l'instant meme ou l'on change son mot de passe.
+  reposerSession(req, res, await getUserById(moi.id));
+  return retour("Mot de passe changé. Vos autres sessions sont fermées.");
+});
 
 // Base publique de l'app (pour générer les scripts routeur).
 function publicBase(req) {
@@ -118,10 +264,10 @@ adminRouter.get("/admin/routers", requireAdmin, async (req, res) => {
       </form>
       <p class="sub" style="margin:10px 0 0">Le slug identifie le routeur dans l'API du portail
       (lettres minuscules/chiffres/tirets). L'URL du portail sert au retour de paiement.</p>
-    </div>`, { active: "routers", side: menuGeneral("g-routeurs") }));
+    </div>`, { active: "routers", user: req.user, side: menuGeneral("g-routeurs", req.user) }));
 });
 
-adminRouter.post("/admin/routers", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers", requireAdmin, requireOwner, async (req, res) => {
   const { name, slug, portal_url } = req.body || {};
   if (!name || !/^[a-z0-9-]+$/.test(String(slug || ""))) return res.redirect("/admin/routers");
   try {
@@ -137,7 +283,7 @@ adminRouter.post("/admin/routers", requireAdmin, async (req, res) => {
   }
 });
 
-adminRouter.post("/admin/routers/:id/delete", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/delete", requireAdmin, requireOwner, async (req, res) => {
   await deleteRouter(Number(req.params.id));
   res.redirect("/admin/routers");
 });
@@ -382,33 +528,36 @@ remove [find name=mv-update]
 
 // Menu vertical d'un routeur : une page par fonction, plutot qu'une seule
 // page ou tout s'empile.
-function menuRouteur(router, actif) {
+function menuRouteur(router, actif, user) {
   const b = `/admin/routers/${router.id}`;
   return {
     titre: router.name,
     actif,
-    items: [
-      [b, "Vue d'ensemble", "vue"],
-      [`${b}/plans`, "Forfaits", "plans"],
-      [`${b}/vouchers`, "Vouchers", "vouchers"],
-      [`${b}/sponsors`, "Sponsors", "sponsors"],
-      [`${b}/files`, "Fichiers du portail", "files"],
-      [`${b}/agent`, "Script agent", "agent"],
-    ],
+    items: user && user.role !== "owner"
+      ? [[b, "Vue d'ensemble", "vue"], [`${b}/vouchers`, "Vouchers", "vouchers"]]
+      : [
+        [b, "Vue d'ensemble", "vue"],
+        [`${b}/plans`, "Forfaits", "plans"],
+        [`${b}/vouchers`, "Vouchers", "vouchers"],
+        [`${b}/sponsors`, "Sponsors", "sponsors"],
+        [`${b}/files`, "Fichiers du portail", "files"],
+        [`${b}/agent`, "Script agent", "agent"],
+      ],
     // Les deux sections du dashboard, pour ne pas avoir a remonter en haut.
-    bas: [
-      ["/admin/routers", "Routeurs", "g-routeurs"],
-      ["/admin/orders", "Ventes", "g-ventes"],
-    ],
+    bas: menuGeneral("", user).items,
   };
 }
 
 // Menu des pages qui ne dependent pas d'un routeur (liste, finances).
-function menuGeneral(actif) {
-  return { titre: "Menu", actif, items: [
-    ["/admin/routers", "Routeurs", "g-routeurs"],
-    ["/admin/orders", "Ventes", "g-ventes"],
-  ] };
+function menuGeneral(actif, user) {
+  const items = [["/admin/routers", "Routeurs", "g-routeurs"]];
+  // Un vendeur n'a rien a faire dans la caisse ni dans les comptes : les
+  // masquer evite de lui proposer des portes qui se refermeront sur lui.
+  if (!user || user.role === "owner") {
+    items.push(["/admin/orders", "Ventes", "g-ventes"]);
+    items.push(["/admin/users", "Comptes", "g-comptes"]);
+  }
+  return { titre: "Menu", actif, items };
 }
 
 // Bandeau de retour d'action (depot de fichiers, effacement...) : sans lui,
@@ -505,7 +654,9 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
   const surRouteur = info ? Number(info.totalUsers) || 0 : null;
   const ecart = surRouteur !== null && attendus.length > 0 &&
     surRouteur < attendus.length * 0.5;
-  const alerte = !ecart ? "" : `
+  // La resynchronisation recree des comptes sur le routeur : action de
+  // proprietaire. Inutile de l'annoncer a qui ne pourra pas la lancer.
+  const alerte = (!ecart || req.user.role !== "owner") ? "" : `
     <div class="card" style="border-color:var(--warn)">
       <h2 style="margin-top:0;color:var(--warn)">Les codes semblent absents du routeur</h2>
       <p class="sub" style="margin:0 0 12px">Le manager compte
@@ -543,14 +694,15 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
 
     <script id="liveScript" src="/admin/live.js" data-router-id="${router.id}"></script>
 
+    ${req.user.role === "owner" ? `
     <form method="post" action="/admin/routers/${router.id}/delete"
           data-confirm="Supprimer ce routeur et tout son historique ?">
       <button class="danger">Supprimer ce routeur</button>
-    </form>`, { active: "routers", side: menuRouteur(router, "vue") }));
+    </form>` : ""}`, { active: "routers", user: req.user, side: menuRouteur(router, "vue", req.user) }));
 });
 
 // Page dediee : commerces qui paient une place sur le portail.
-adminRouter.get("/admin/routers/:id/sponsors", requireAdmin, async (req, res) => {
+adminRouter.get("/admin/routers/:id/sponsors", requireAdmin, requireOwner, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
   const sponsors = await listSponsors(router.id);
@@ -628,11 +780,11 @@ adminRouter.get("/admin/routers/:id/sponsors", requireAdmin, async (req, res) =>
       avant que le client soit connecté. PNG, JPEG ou WebP, 2 Mo maximum.
       « Essai gratuit » écrit « offertes par ... » sous le bouton d'essai —
       c'est la place qui se vend le mieux : le client reçoit un cadeau.</p>
-    </div>`, { active: "routers", side: menuRouteur(router, "sponsors") }));
+    </div>`, { active: "routers", user: req.user, side: menuRouteur(router, "sponsors", req.user) }));
 });
 
 // Page dediee : fichiers du portail captif.
-adminRouter.get("/admin/routers/:id/files", requireAdmin, async (req, res) => {
+adminRouter.get("/admin/routers/:id/files", requireAdmin, requireOwner, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
   const fichiers = await listPortalFiles(router.id);
@@ -700,12 +852,12 @@ adminRouter.get("/admin/routers/:id/files", requireAdmin, async (req, res) => {
         <button type="submit">Enregistrer</button>
       </form>
     </div>
-`, { active: "routers", side: menuRouteur(router, "files") }));
+`, { active: "routers", user: req.user, side: menuRouteur(router, "files", req.user) }));
 });
 
 
 // Page dediee : script a importer sur le routeur.
-adminRouter.get("/admin/routers/:id/agent", requireAdmin, async (req, res) => {
+adminRouter.get("/admin/routers/:id/agent", requireAdmin, requireOwner, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
   const base = publicBase(req);
@@ -752,7 +904,7 @@ adminRouter.get("/admin/routers/:id/agent", requireAdmin, async (req, res) => {
         </script>
       </div>
     </div>
-`, { active: "routers", side: menuRouteur(router, "agent") }));
+`, { active: "routers", user: req.user, side: menuRouteur(router, "agent", req.user) }));
 });
 
 // Script client de la fiche routeur, servi comme fichier statique.
@@ -784,7 +936,7 @@ adminRouter.get("/admin/api/routers/:id/live", requireAdmin, async (req, res) =>
 });
 
 // Page dédiée aux forfaits d'un routeur.
-adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
+adminRouter.get("/admin/routers/:id/plans", requireAdmin, requireOwner, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
   const plans = await listPlans(router.id);
@@ -881,7 +1033,7 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
       <span class="mono">30m</span>, <span class="mono">2h</span>,
       <span class="mono">1d</span>. « À nouveau après » compte depuis le début
       de l'essai. La page de connexion annonce la durée toute seule.</p>
-    </div>`, { active: "routers", side: menuRouteur(router, "plans") }));
+    </div>`, { active: "routers", user: req.user, side: menuRouteur(router, "plans", req.user) }));
 });
 
 // Page dédiée aux vouchers d'un routeur (la fiche routeur reste légère).
@@ -1008,12 +1160,12 @@ adminRouter.get("/admin/routers/:id/vouchers", requireAdmin, async (req, res) =>
         cases.forEach(function (c) { c.addEventListener("change", majuscule); });
         majuscule();
       })();
-    </script>`, { active: "routers", side: menuRouteur(router, "vouchers") }));
+    </script>`, { active: "routers", user: req.user, side: menuRouteur(router, "vouchers", req.user) }));
 });
 
 // Change le forfait d'un voucher : le compte est recréé sur le routeur avec
 // la nouvelle durée / le nouveau nombre d'appareils.
-adminRouter.post("/admin/routers/:id/vouchers/:vid/plan", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/vouchers/:vid/plan", requireAdmin, requireOwner, async (req, res) => {
   const routerId = Number(req.params.id);
   const vid = Number(req.params.vid);
   const plan = await getPlan(routerId, String((req.body || {}).plan_code || ""));
@@ -1033,7 +1185,7 @@ adminRouter.post("/admin/routers/:id/vouchers/:vid/plan", requireAdmin, async (r
 // Supprime un voucher : retiré de la liste ici, et une commande 'remove' est
 // mise en file pour que le routeur supprime le compte hotspot (donc déconnecte
 // le client s'il est en ligne).
-adminRouter.post("/admin/routers/:id/vouchers/:vid/delete", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/vouchers/:vid/delete", requireAdmin, requireOwner, async (req, res) => {
   const routerId = Number(req.params.id);
   const removed = await deleteVoucher(routerId, Number(req.params.vid));
   if (removed) await queueCommand(routerId, "remove", { code: removed.code });
@@ -1041,7 +1193,7 @@ adminRouter.post("/admin/routers/:id/vouchers/:vid/delete", requireAdmin, async 
 });
 
 // Suppression en lot depuis la selection.
-adminRouter.post("/admin/routers/:id/vouchers/delete", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/vouchers/delete", requireAdmin, requireOwner, async (req, res) => {
   const routerId = Number(req.params.id);
   const brut = (req.body || {}).ids;
   const ids = (Array.isArray(brut) ? brut : [brut])
@@ -1059,7 +1211,7 @@ adminRouter.post("/admin/routers/:id/vouchers/delete", requireAdmin, async (req,
 });
 
 // Recrée tous les vouchers actifs sur le routeur (réparation après reset).
-adminRouter.post("/admin/routers/:id/resync", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/resync", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   const n = await resyncVouchers(id);
   console.log(`[resync] ${n} voucher(s) remis en file pour le routeur ${id}`);
@@ -1067,7 +1219,7 @@ adminRouter.post("/admin/routers/:id/resync", requireAdmin, async (req, res) => 
 });
 
 // Déconnecte un client : on supprime son compte hotspot sur le routeur.
-adminRouter.post("/admin/routers/:id/kick", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/kick", requireAdmin, requireOwner, async (req, res) => {
   const routerId = Number(req.params.id);
   const code = String((req.body || {}).code || "");
   if (code) await queueCommand(routerId, "remove", { code });
@@ -1085,7 +1237,7 @@ async function pousserFichier(routerId, portalDir, fichier) {
   });
 }
 
-adminRouter.post("/admin/routers/:id/agent/update", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/agent/update", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   const router = await getRouter(id);
   if (!router) return res.redirect("/admin/routers");
@@ -1094,7 +1246,7 @@ adminRouter.post("/admin/routers/:id/agent/update", requireAdmin, async (req, re
     "Mise à jour envoyée. Le routeur télécharge le script et l'importe dans la minute."));
 });
 
-adminRouter.post("/admin/routers/:id/trial", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/trial", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   const router = await getRouter(id);
   if (!router) return res.redirect("/admin/routers");
@@ -1111,7 +1263,7 @@ adminRouter.post("/admin/routers/:id/trial", requireAdmin, async (req, res) => {
 });
 
 // ------------------------------------------------------------ sponsors ----
-adminRouter.post("/admin/routers/:id/sponsors", requireAdmin,
+adminRouter.post("/admin/routers/:id/sponsors", requireAdmin, requireOwner,
   upload.single("image"), async (req, res) => {
     const id = Number(req.params.id);
     const router = await getRouter(id);
@@ -1147,13 +1299,13 @@ adminRouter.post("/admin/routers/:id/sponsors", requireAdmin,
     return retour(`${nom} ajouté.`);
   });
 
-adminRouter.post("/admin/routers/:id/sponsors/:sid/toggle", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/sponsors/:sid/toggle", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   await toggleSponsor(id, Number(req.params.sid), req.body.actif === "1");
   res.redirect(`/admin/routers/${id}/sponsors`);
 });
 
-adminRouter.post("/admin/routers/:id/sponsors/:sid/delete", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/sponsors/:sid/delete", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   const router = await getRouter(id);
   if (!router) return res.redirect("/admin/routers");
@@ -1173,7 +1325,7 @@ adminRouter.post("/admin/routers/:id/sponsors/:sid/delete", requireAdmin, async 
 });
 
 // --------------------------------------------- fichiers du portail ----
-adminRouter.post("/admin/routers/:id/files", requireAdmin,
+adminRouter.post("/admin/routers/:id/files", requireAdmin, requireOwner,
   upload.array("fichiers", 20), async (req, res) => {
     const id = Number(req.params.id);
     const router = await getRouter(id);
@@ -1216,7 +1368,7 @@ adminRouter.post("/admin/routers/:id/files", requireAdmin,
       (refuses.length ? ` — refusé(s) : ${refuses.join(", ")}` : ""));
   });
 
-adminRouter.post("/admin/routers/:id/files/:fid/delete", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/files/:fid/delete", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   await deletePortalFile(id, Number(req.params.fid));
   res.redirect(`/admin/routers/${id}`);
@@ -1224,7 +1376,7 @@ adminRouter.post("/admin/routers/:id/files/:fid/delete", requireAdmin, async (re
 
 // Efface le fichier SUR le routeur, puis le retire de la liste : il n'y est
 // plus, le garder afficherait un etat faux.
-adminRouter.post("/admin/routers/:id/files/:fid/unlink", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/files/:fid/unlink", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   const router = await getRouter(id);
   if (!router) return res.redirect("/admin/routers");
@@ -1238,7 +1390,7 @@ adminRouter.post("/admin/routers/:id/files/:fid/unlink", requireAdmin, async (re
     encodeURIComponent(`Effacement de ${f.path} demandé au routeur.`));
 });
 
-adminRouter.post("/admin/routers/:id/files/push", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/files/push", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   const router = await getRouter(id);
   if (!router) return res.redirect("/admin/routers");
@@ -1254,14 +1406,14 @@ adminRouter.post("/admin/routers/:id/files/push", requireAdmin, async (req, res)
   res.redirect(`/admin/routers/${id}`);
 });
 
-adminRouter.post("/admin/routers/:id/portal-dir", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/portal-dir", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   const dir = cheminPortailValide(String(req.body.dir || ""));
   if (dir) await setPortalDir(id, dir);
   res.redirect(`/admin/routers/${id}`);
 });
 
-adminRouter.get("/admin/routers/:id/agent.rsc", requireAdmin, async (req, res) => {
+adminRouter.get("/admin/routers/:id/agent.rsc", requireAdmin, requireOwner, async (req, res) => {
   const router = await getRouter(Number(req.params.id));
   if (!router) return res.redirect("/admin/routers");
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -1269,7 +1421,7 @@ adminRouter.get("/admin/routers/:id/agent.rsc", requireAdmin, async (req, res) =
   res.send(agentRsc(router, publicBase(req)));
 });
 
-adminRouter.post("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/plans", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   const { code, label, price_htg, uptime } = req.body || {};
   // Le code sert d'identifiant d'API et de nom de profil RouterOS : on le
@@ -1306,12 +1458,12 @@ adminRouter.post("/admin/routers/:id/plans", requireAdmin, async (req, res) => {
   res.redirect(`/admin/routers/${id}/plans`);
 });
 
-adminRouter.post("/admin/routers/:id/plans/delete", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/plans/delete", requireAdmin, requireOwner, async (req, res) => {
   await removePlan(Number(req.params.id), String((req.body || {}).code || ""));
   res.redirect(`/admin/routers/${req.params.id}/plans`);
 });
 
-adminRouter.post("/admin/routers/:id/plans/restore", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/routers/:id/plans/restore", requireAdmin, requireOwner, async (req, res) => {
   await activatePlan(Number(req.params.id), String((req.body || {}).code || ""));
   res.redirect(`/admin/routers/${req.params.id}/plans`);
 });
@@ -1417,7 +1569,7 @@ const HTG = (n) => Number(n || 0).toLocaleString("fr-FR");
 
 // Sauvegarde intégrale (JSON) : à télécharger régulièrement et garder ailleurs
 // que chez l'hébergeur.
-adminRouter.post("/admin/restore", requireAdmin,
+adminRouter.post("/admin/restore", requireAdmin, requireOwner,
   upload.single("sauvegarde"), async (req, res) => {
     const retour = (m) => res.redirect("/admin/orders?msg=" + encodeURIComponent(m));
     if (!req.file) return retour("Aucun fichier reçu.");
@@ -1438,7 +1590,7 @@ adminRouter.post("/admin/restore", requireAdmin,
 
 // Remise a zero de fin d'essais. Mot a taper : un clic distrait ne doit pas
 // suffire a effacer la comptabilite.
-adminRouter.post("/admin/reset", requireAdmin, async (req, res) => {
+adminRouter.post("/admin/reset", requireAdmin, requireOwner, async (req, res) => {
   const retour = (m) => res.redirect("/admin/orders?msg=" + encodeURIComponent(m));
   if (String((req.body || {}).confirm || "").trim().toUpperCase() !== "EFFACER") {
     return retour("Rien effacé : le mot de confirmation ne correspond pas.");
@@ -1451,7 +1603,7 @@ adminRouter.post("/admin/reset", requireAdmin, async (req, res) => {
     : `Remise à zéro : ${commandes} vente(s) effacée(s). Les codes sont conservés.`);
 });
 
-adminRouter.get("/admin/backup.json", requireAdmin, async (req, res) => {
+adminRouter.get("/admin/backup.json", requireAdmin, requireOwner, async (req, res) => {
   const data = await dumpAll();
   const jour = new Date().toISOString().slice(0, 10);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -1461,7 +1613,7 @@ adminRouter.get("/admin/backup.json", requireAdmin, async (req, res) => {
 
 // Export comptable. Séparateur ';' et BOM : Excel en français ouvre le fichier
 // directement, sans passer par l'assistant d'importation.
-adminRouter.get("/admin/export.csv", requireAdmin, async (req, res) => {
+adminRouter.get("/admin/export.csv", requireAdmin, requireOwner, async (req, res) => {
   const ventes = await allSales();
   const champ = (v) => {
     const t = v == null ? "" : String(v);
@@ -1513,7 +1665,7 @@ function dailyChart(days) {
     </div>`;
 }
 
-adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
+adminRouter.get("/admin/orders", requireAdmin, requireOwner, async (req, res) => {
   const jours = Math.min(Math.max(Number(req.query.j) || 30, 7), 90);
   const [orders, parRouteur, fin, cash, stock, parJour, parPlan, parMethode] =
     await Promise.all([
@@ -1700,5 +1852,5 @@ adminRouter.get("/admin/orders", requireAdmin, async (req, res) => {
       restent en place et continuent de fonctionner ; seul l'historique des
       paiements disparaît. Avec la case, les codes sont aussi supprimés des
       routeurs : les billets déjà imprimés cessent de marcher.</p>
-    </div>`, { active: "orders", side: menuGeneral("g-ventes") }));
+    </div>`, { active: "orders", user: req.user, side: menuGeneral("g-ventes", req.user) }));
 });

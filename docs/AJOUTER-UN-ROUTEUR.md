@@ -318,3 +318,32 @@ règle le problème.
 7. Walled-garden : manager + Pay'm + Moncash + Natcash (par IP si besoin)
 8. Voucher de test, puis vrai paiement au tarif le plus bas
 ```
+
+
+## Comptes et rôles
+
+Le dashboard n'a plus de mot de passe partagé : chacun entre avec son adresse
+e-mail. Deux rôles :
+
+- **Propriétaire** — tout : finances, forfaits, sponsors, fichiers du portail,
+  script agent, remise à zéro, sauvegardes, comptes.
+- **Vendeur** — voir les clients connectés, générer et imprimer des codes.
+  Ni caisse, ni réglages, ni suppression. Les pages qui ne le concernent pas
+  ne lui sont même pas proposées dans le menu.
+
+**Première mise en route.** Tant qu'aucun compte n'existe, `ADMIN_PASSWORD`
+ouvre le dashboard et mène directement à la page Comptes, pour créer le
+premier propriétaire. **Dès qu'un compte actif existe, ce mot de passe cesse
+de fonctionner** — le laisser vivre en ferait une porte dérobée permanente.
+
+**Si vous perdez le mot de passe du dernier propriétaire**, la seule reprise
+passe par la base : supprimez la ligne dans `users` (console Neon), et
+`ADMIN_PASSWORD` redevient utilisable le temps de recréer un compte.
+
+Le dashboard refuse de rétrograder, désactiver ou supprimer le **dernier
+propriétaire actif** : sans cela, un clic suffirait à fermer la porte à tout
+le monde.
+
+Les mots de passe ne sont pas stockés : seule une empreinte scrypt l'est, avec
+un sel propre à chaque compte. Changer son mot de passe ferme ses autres
+sessions.

@@ -3,6 +3,7 @@
 // routeur ; ajouter un tenant_id plus tard ne demandera pas de réécriture.
 
 import { readFileSync } from "node:fs";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import pg from "pg";
 import { config } from "./config.js";
 import { durationToSeconds, generateRouterToken } from "./codes.js";
@@ -129,6 +130,21 @@ export async function initDb() {
     -- Ce qui se vend ici n'est pas de l'impression au mille, c'est l'attention
     -- des gens du coin ; d'ou des dates de contrat et des compteurs, qui
     -- servent a renouveler.
+    -- Comptes du dashboard. Avant, un seul mot de passe partage vivait dans
+    -- les variables d'environnement : impossible de savoir qui avait fait
+    -- quoi, et impossible de confier la vente a quelqu'un sans lui ouvrir
+    -- les finances.
+    CREATE TABLE IF NOT EXISTS users (
+      id            SERIAL PRIMARY KEY,
+      email         TEXT NOT NULL UNIQUE,
+      name          TEXT NOT NULL DEFAULT '',
+      pass_hash     TEXT NOT NULL,      -- scrypt : sel:cle, en hexadecimal
+      role          TEXT NOT NULL DEFAULT 'vendeur',  -- owner | vendeur
+      active        BOOLEAN NOT NULL DEFAULT true,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_login    TIMESTAMPTZ
+    );
+
     CREATE TABLE IF NOT EXISTS sponsors (
       id          SERIAL PRIMARY KEY,
       router_id   INT NOT NULL REFERENCES routers(id) ON DELETE CASCADE,
@@ -370,6 +386,121 @@ export async function echeanceVoucher(routerId, code) {
       WHERE v.router_id = $1 AND v.code = $2
         AND p.validity_seconds > 0`, [routerId, code]);
   return rows[0] || null;
+}
+
+// ------------------------------------------------------------ comptes ----
+
+// scrypt : livre avec Node, donc aucune dependance native a compiler chez
+// l'hebergeur. Le sel est tire par compte et voyage avec l'empreinte.
+export function hacherMotDePasse(motDePasse) {
+  const sel = randomBytes(16);
+  const cle = scryptSync(String(motDePasse), sel, 32);
+  return sel.toString("hex") + ":" + cle.toString("hex");
+}
+
+export function verifierMotDePasse(motDePasse, empreinte) {
+  const [selHex, cleHex] = String(empreinte || "").split(":");
+  if (!selHex || !cleHex) return false;
+  const attendu = Buffer.from(cleHex, "hex");
+  const calcule = scryptSync(String(motDePasse), Buffer.from(selHex, "hex"), attendu.length);
+  return attendu.length === calcule.length && timingSafeEqual(attendu, calcule);
+}
+
+export async function compterUtilisateurs() {
+  const { rows } = await pool.query(`SELECT count(*)::int AS n FROM users WHERE active`);
+  return rows[0].n;
+}
+
+export async function listUsers() {
+  const { rows } = await pool.query(
+    `SELECT id, email, name, role, active, created_at, last_login
+       FROM users ORDER BY active DESC, email`);
+  return rows;
+}
+
+export async function getUserById(id) {
+  const { rows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [id]);
+  return rows[0] || null;
+}
+
+export async function getUserByEmail(email) {
+  const { rows } = await pool.query(
+    `SELECT * FROM users WHERE lower(email) = lower($1)`, [String(email || "")]);
+  return rows[0] || null;
+}
+
+export async function createUser({ email, name, motDePasse, role }) {
+  const { rows } = await pool.query(
+    `INSERT INTO users (email, name, pass_hash, role) VALUES ($1,$2,$3,$4) RETURNING *`,
+    [String(email).trim(), String(name || "").trim(),
+     hacherMotDePasse(motDePasse), role === "owner" ? "owner" : "vendeur"]);
+  return rows[0];
+}
+
+export async function setUserPassword(id, motDePasse) {
+  await pool.query(`UPDATE users SET pass_hash = $2 WHERE id = $1`,
+    [id, hacherMotDePasse(motDePasse)]);
+}
+
+export async function touchUserLogin(id) {
+  await pool.query(`UPDATE users SET last_login = now() WHERE id = $1`, [id]);
+}
+
+// Compte les proprietaires encore actifs, en excluant eventuellement l'un
+// d'eux : sert a refuser la modification qui fermerait la porte a tout le
+// monde. Un dashboard sans proprietaire ne se recupere que par la base.
+async function autresProprietaires(client, saufId) {
+  const { rows } = await client.query(
+    `SELECT count(*)::int AS n FROM users
+      WHERE role = 'owner' AND active AND id <> $1`, [saufId]);
+  return rows[0].n;
+}
+
+export async function updateUser(id, { role, active }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT * FROM users WHERE id = $1 FOR UPDATE`, [id]);
+    if (rows.length === 0) { await client.query("ROLLBACK"); return { ok: false, raison: "introuvable" }; }
+    const perdProprietaire = rows[0].role === "owner"
+      && (role === "vendeur" || active === false);
+    if (perdProprietaire && (await autresProprietaires(client, id)) === 0) {
+      await client.query("ROLLBACK");
+      return { ok: false, raison: "dernier-proprietaire" };
+    }
+    await client.query(
+      `UPDATE users SET role = COALESCE($2, role), active = COALESCE($3, active)
+        WHERE id = $1`,
+      [id, role === undefined ? null : role, active === undefined ? null : active]);
+    await client.query("COMMIT");
+    return { ok: true };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteUser(id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT role FROM users WHERE id = $1 FOR UPDATE`, [id]);
+    if (rows.length === 0) { await client.query("ROLLBACK"); return { ok: false, raison: "introuvable" }; }
+    if (rows[0].role === "owner" && (await autresProprietaires(client, id)) === 0) {
+      await client.query("ROLLBACK");
+      return { ok: false, raison: "dernier-proprietaire" };
+    }
+    await client.query(`DELETE FROM users WHERE id = $1`, [id]);
+    await client.query("COMMIT");
+    return { ok: true };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // --------------------------------------------------------- sponsors ----

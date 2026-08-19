@@ -46,6 +46,42 @@ const upload = multer({
   };
 });
 
+// Barriere unique pour tout ce qui vit sous /admin/routers/:id. Sans elle,
+// il fallait se souvenir de verifier le locataire dans chaque handler — et
+// quinze routes qui modifient (supprimer un routeur, deconnecter un client,
+// effacer des codes) l'avaient oublie : un identifiant devine dans l'URL
+// suffisait a agir chez un autre client du service.
+adminRouter.use("/admin/routers/:id", requireAdmin, function (req, res, next) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.redirect("/admin/routers");
+  getRouter(id, req.user.tenant_id).then((routeur) => {
+    if (!routeur) {
+      // Meme reponse qu'un routeur inexistant : ne pas confirmer qu'il
+      // existe ailleurs.
+      return res.status(404).type("html").send(layout("Introuvable", `
+        <div class="card" style="max-width:420px;margin:60px auto;text-align:center">
+          <h1>Routeur introuvable</h1>
+          <a class="btn ghost" href="/admin/routers">Retour</a>
+        </div>`, { user: req.user }));
+    }
+    req.routeur = routeur;
+    next();
+  }).catch(next);
+});
+
+// Meme principe pour les comptes : on ne touche qu'aux siens.
+adminRouter.use("/admin/users/:id", requireAdmin, requireOwner, function (req, res, next) {
+  if (req.params.id === "moi") return next();
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.redirect("/admin/users");
+  getUserById(id).then((cible) => {
+    if (!cible || cible.tenant_id !== req.user.tenant_id) {
+      return res.redirect("/admin/users?msg=" + encodeURIComponent("Compte introuvable."));
+    }
+    next();
+  }).catch(next);
+});
+
 adminRouter.get("/admin/login", (req, res) => loginPage(res));
 adminRouter.post("/admin/login", handleLogin);
 adminRouter.post("/admin/logout", handleLogout);
@@ -153,7 +189,7 @@ adminRouter.post("/admin/users", requireAdmin, requireOwner, async (req, res) =>
 adminRouter.post("/admin/users/:id/role", requireAdmin, requireOwner, async (req, res) => {
   const retour = (m) => res.redirect("/admin/users?msg=" + encodeURIComponent(m));
   const role = (req.body || {}).role === "owner" ? "owner" : "vendeur";
-  const r = await updateUser(Number(req.params.id), { role });
+  const r = await updateUser(Number(req.params.id), { role }, req.user.tenant_id);
   return retour(r.ok ? "Rôle modifié."
     : r.raison === "dernier-proprietaire"
       ? "Refusé : c'est le dernier propriétaire actif. Nommez-en un autre d'abord."
@@ -163,7 +199,7 @@ adminRouter.post("/admin/users/:id/role", requireAdmin, requireOwner, async (req
 adminRouter.post("/admin/users/:id/active", requireAdmin, requireOwner, async (req, res) => {
   const retour = (m) => res.redirect("/admin/users?msg=" + encodeURIComponent(m));
   const actif = (req.body || {}).active === "1";
-  const r = await updateUser(Number(req.params.id), { active: actif });
+  const r = await updateUser(Number(req.params.id), { active: actif }, req.user.tenant_id);
   return retour(r.ok ? (actif ? "Compte réactivé." : "Compte désactivé.")
     : r.raison === "dernier-proprietaire"
       ? "Refusé : c'est le dernier propriétaire actif. Nommez-en un autre d'abord."
@@ -172,7 +208,7 @@ adminRouter.post("/admin/users/:id/active", requireAdmin, requireOwner, async (r
 
 adminRouter.post("/admin/users/:id/delete", requireAdmin, requireOwner, async (req, res) => {
   const retour = (m) => res.redirect("/admin/users?msg=" + encodeURIComponent(m));
-  const r = await deleteUser(Number(req.params.id));
+  const r = await deleteUser(Number(req.params.id), req.user.tenant_id);
   return retour(r.ok ? "Compte supprimé."
     : r.raison === "dernier-proprietaire"
       ? "Refusé : c'est le dernier propriétaire actif."
@@ -249,6 +285,7 @@ adminRouter.get("/admin/routers", requireAdmin, async (req, res) => {
   res.type("html").send(layout("Routeurs", `
     <h1>Routeurs</h1>
     <p class="sub">Chaque routeur MikroTik vient tirer ses commandes ici (aucun port à ouvrir chez lui).</p>
+    ${bandeauMsg(req)}
     <div class="card">
       <table>
         <tr><th>Nom</th><th>Slug</th><th>État</th><th>Commandes</th></tr>
@@ -281,7 +318,12 @@ adminRouter.post("/admin/routers", requireAdmin, requireOwner, async (req, res) 
     res.redirect(`/admin/routers/${r.id}`);
   } catch (err) {
     console.error("[routers:create]", err.message);
-    res.redirect("/admin/routers");
+    // Le slug voyage dans l'URL publique du portail : il est unique pour tout
+    // le service, y compris chez les autres clients.
+    const msg = String(err.code) === "23505"
+      ? `Le slug « ${String(slug)} » est déjà pris. Choisissez-en un autre.`
+      : "Création impossible.";
+    res.redirect("/admin/routers?msg=" + encodeURIComponent(msg));
   }
 });
 
@@ -1588,7 +1630,10 @@ adminRouter.post("/admin/restore", requireAdmin, requireOwner,
       `Restauration : ${b.routeurs} routeur(s), ${b.forfaits} forfait(s), ` +
       `${b.vouchers} voucher(s), ${b.ventes} vente(s) ajoutés. ` +
       `Ce qui existait déjà a été laissé tel quel` +
-      (b.ignores ? `, ${b.ignores} ligne(s) ignorée(s)` : "") + ".");
+      (b.ignores ? `, ${b.ignores} ligne(s) ignorée(s)` : "") + "." +
+      (b.slugsPris.length
+        ? ` Slug déjà utilisé ailleurs, routeur non repris : ${b.slugsPris.join(", ")}.`
+        : ""));
   });
 
 // Remise a zero de fin d'essais. Mot a taper : un clic distrait ne doit pas

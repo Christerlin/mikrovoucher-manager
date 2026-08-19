@@ -552,11 +552,13 @@ async function autresProprietaires(client, saufId) {
   return rows[0].n;
 }
 
-export async function updateUser(id, { role, active }) {
+export async function updateUser(id, { role, active }, tenantId) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const { rows } = await client.query(`SELECT * FROM users WHERE id = $1 FOR UPDATE`, [id]);
+    const { rows } = await client.query(
+      `SELECT * FROM users WHERE id = $1
+        AND ($2::int IS NULL OR tenant_id = $2) FOR UPDATE`, [id, tenantId ?? null]);
     if (rows.length === 0) { await client.query("ROLLBACK"); return { ok: false, raison: "introuvable" }; }
     const perdProprietaire = rows[0].role === "owner"
       && (role === "vendeur" || active === false);
@@ -578,11 +580,13 @@ export async function updateUser(id, { role, active }) {
   }
 }
 
-export async function deleteUser(id) {
+export async function deleteUser(id, tenantId) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const { rows } = await client.query(`SELECT role FROM users WHERE id = $1 FOR UPDATE`, [id]);
+    const { rows } = await client.query(
+      `SELECT role FROM users WHERE id = $1
+        AND ($2::int IS NULL OR tenant_id = $2) FOR UPDATE`, [id, tenantId ?? null]);
     if (rows.length === 0) { await client.query("ROLLBACK"); return { ok: false, raison: "introuvable" }; }
     if (rows[0].role === "owner" && (await autresProprietaires(client, id)) === 0) {
       await client.query("ROLLBACK");
@@ -765,7 +769,8 @@ export function secondesEnDuree(sec) {
 // reference (ventes). Le jeton d'un routeur ne figure pas dans la sauvegarde
 // — un routeur recree en obtient un neuf, et son script doit etre reimporte.
 export async function restaurer(data, tenantId) {
-  const bilan = { routeurs: 0, forfaits: 0, vouchers: 0, ventes: 0, ignores: 0 };
+  const bilan = { routeurs: 0, forfaits: 0, vouchers: 0, ventes: 0, ignores: 0,
+                  slugsPris: [] };
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -778,12 +783,30 @@ export async function restaurer(data, tenantId) {
       let { rows } = await client.query(
         `SELECT id FROM routers WHERE slug = $1 AND tenant_id = $2`, [r.slug, tenantId]);
       if (rows.length === 0) {
-        const ins = await client.query(
-          `INSERT INTO routers (slug, name, pull_token, portal_url, tenant_id)
-           VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-          [r.slug, r.name || r.slug, generateRouterToken(), r.portal_url || "", tenantId]);
-        rows = ins.rows;
-        bilan.routeurs += 1;
+        // Le slug identifie le routeur dans l'URL publique du portail : il est
+        // donc unique pour tout le service. S'il est deja pris ailleurs, on
+        // passe ce routeur et on le dit, plutot que de faire echouer toute la
+        // restauration — un autre client aurait alors le pouvoir d'empecher
+        // la reprise de celui-ci.
+        // Point de reprise : dans PostgreSQL, une erreur avorte toute la
+        // transaction. Sans SAVEPOINT, rattraper la collision ne servirait a
+        // rien — les insertions suivantes seraient refusees jusqu'au rollback.
+        await client.query("SAVEPOINT avant_routeur");
+        try {
+          const ins = await client.query(
+            `INSERT INTO routers (slug, name, pull_token, portal_url, tenant_id)
+             VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+            [r.slug, r.name || r.slug, generateRouterToken(), r.portal_url || "", tenantId]);
+          await client.query("RELEASE SAVEPOINT avant_routeur");
+          rows = ins.rows;
+          bilan.routeurs += 1;
+        } catch (err) {
+          await client.query("ROLLBACK TO SAVEPOINT avant_routeur");
+          if (String(err.code) !== "23505") throw err;
+          bilan.slugsPris.push(r.slug);
+          bilan.ignores += 1;
+          continue;
+        }
       }
       mapRouteur.set(r.id, rows[0].id);
     }

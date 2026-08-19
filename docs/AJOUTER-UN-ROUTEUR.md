@@ -347,3 +347,25 @@ le monde.
 Les mots de passe ne sont pas stockés : seule une empreinte scrypt l'est, avec
 un sel propre à chaque compte. Changer son mot de passe ferme ses autres
 sessions.
+
+
+## Encaissement : chacun chez soi
+
+Chaque organisation pose ses propres identifiants Pay'm dans **Mon compte**.
+L'argent des ventes arrive **directement** sur le compte de l'opérateur ; il ne
+transite jamais par le service. C'est aussi ce qui évite d'en faire un
+transmetteur de fonds, avec les obligations que cela entraîne.
+
+Sans identifiants, le portail fonctionne toujours : seul le paiement en ligne
+reste fermé, la vente de codes en espèces continue.
+
+La clé secrète n'est jamais réaffichée — laisser le champ vide la conserve — et
+ni elle ni le client_id ne figurent dans les sauvegardes, au même titre que les
+jetons de routeur : une sauvegarde circule, et ceux-là ouvrent l'encaissement.
+
+**Repli sur l'environnement.** `PAYM_CLIENT_ID` ne sert plus qu'à
+l'installation d'origine, celle qui tournait avant l'arrivée des comptes : elle
+n'a donc rien à ressaisir. Aucune autre organisation n'en hérite. Sans ce
+verrou, un nouveau client qui n'a pas encore posé ses identifiants encaisserait
+en silence sur le compte du service — la pire panne que ce système puisse
+avoir.

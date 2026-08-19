@@ -6,7 +6,7 @@
 import { verifyPayment } from "./paym.js";
 import {
   claimPaid, getOrder, getPlanById, createVoucher, attachVoucherToOrder,
-  getVoucherById, prolongerVoucher, getVoucherByCode,
+  getVoucherById, prolongerVoucher, getVoucherByCode, paymDuRouteur,
 } from "./db.js";
 import { generateVoucherCode, durationToSeconds } from "./codes.js";
 
@@ -72,8 +72,10 @@ export async function processOrder(order) {
     return { status: "PAID" };  // en attente de création par le routeur
   }
 
-  // PENDING -> on interroge Pay'm.
-  const result = await verifyPayment(order.reference);
+  // PENDING -> on interroge Pay'm, avec les identifiants de l'operateur qui
+  // possede le routeur : c'est son encaissement qu'on verifie.
+  const compte = await paymDuRouteur(order.router_id);
+  const result = await verifyPayment(order.reference, compte ? compte.paym_client_id : null);
   if (!result.paid) return { status: "PENDING" };
   if (!(result.amountHtg >= order.amount_htg)) {
     console.warn(`[deliver] Sous-paiement ${order.reference} : payé ${result.amountHtg}, attendu ${order.amount_htg}`);

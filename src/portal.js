@@ -154,13 +154,18 @@ portalRouter.get("/api/portal/:slug/sponsors/:id/clic", rateLimit(120), async (r
 // 1) Créer un paiement.
 portalRouter.post("/api/checkout", rateLimit(12), async (req, res) => {
   try {
-    if (!paymentsEnabled()) {
-      return res.status(503).json({ error: "Paiement en ligne non configuré." });
-    }
     const { routerSlug, planId, method, recharge } = req.body || {};
     if (!METHODS.has(method)) return res.status(400).json({ error: "Méthode de paiement invalide." });
     const router = await getRouterBySlug(String(routerSlug || ""));
     if (!router) return res.status(400).json({ error: "Routeur inconnu." });
+    // Identifiants de l'operateur qui possede ce routeur : c'est chez lui que
+    // l'argent arrive, pas chez nous.
+    const { paymDuRouteur } = await import("./db.js");
+    const compte = await paymDuRouteur(router.id);
+    const clientId = compte ? compte.paym_client_id : null;
+    if (!paymentsEnabled(clientId)) {
+      return res.status(503).json({ error: "Paiement en ligne non configuré." });
+    }
     const plan = await getPlan(router.id, String(planId || ""));
     if (!plan) return res.status(400).json({ error: "Forfait invalide." });
 
@@ -187,7 +192,7 @@ portalRouter.post("/api/checkout", rateLimit(12), async (req, res) => {
     const claimToken = generateClaimToken();
     const retrievalPin = generateRetrievalPin();
     const { redirectUrl, transactionId } = await createPayment({
-      reference, montantHtg: plan.price_htg, method,
+      reference, montantHtg: plan.price_htg, method, clientId,
     });
     await createOrder({
       reference,

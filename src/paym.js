@@ -8,7 +8,10 @@
 
 import { config } from "./config.js";
 
-export const paymentsEnabled = () => Boolean(config.paym.clientId);
+// Chaque operateur encaisse chez lui : le client_id vient de son compte, et
+// les variables d'environnement ne servent plus que de repli pour
+// l'installation d'origine, qui n'a rien a ressaisir.
+export const paymentsEnabled = (clientId) => Boolean(clientId);
 
 async function post(path, body) {
   const res = await fetch(`${config.paym.baseUrl}${path}`, {
@@ -23,11 +26,11 @@ async function post(path, body) {
   return json;
 }
 
-export async function createPayment({ reference, montantHtg, method }) {
+export async function createPayment({ reference, montantHtg, method, clientId }) {
   const montant = Math.ceil(montantHtg);
   if (montant < 20) throw new Error("Montant minimum : 20 HTG");
   const j = await post("/api/paiement-marchand", {
-    client_id: config.paym.clientId,
+    client_id: clientId,
     refference_id: reference,
     montant,
     payment_method: method, // moncash | natcash | kashpaw | all
@@ -36,9 +39,9 @@ export async function createPayment({ reference, montantHtg, method }) {
   return { redirectUrl: j.url, transactionId: j.transaction_id || null };
 }
 
-export async function verifyPayment(reference) {
+export async function verifyPayment(reference, clientId) {
   const j = await post("/api/paiement-verify", {
-    client_id: config.paym.clientId,
+    client_id: clientId,
     refference_id: reference,
   });
   return {

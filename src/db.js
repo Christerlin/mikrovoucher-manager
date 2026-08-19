@@ -149,6 +149,11 @@ export async function initDb() {
       payout_mode   TEXT NOT NULL DEFAULT 'direct',
       paym_client_id     TEXT,
       paym_client_secret TEXT,
+      -- Repli sur les variables d'environnement, reserve au locataire issu de
+      -- l'installation d'origine : sans ce verrou, un nouveau client qui n'a
+      -- pas encore pose ses identifiants encaisserait sur NOTRE compte, en
+      -- silence. C'est la pire panne possible de ce systeme.
+      paym_from_env      BOOLEAN NOT NULL DEFAULT false,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
@@ -253,8 +258,10 @@ export async function backfillTenants() {
       `SELECT name, slug FROM routers ORDER BY id LIMIT 1`);
     const nom = premier[0] ? premier[0].name : "Mon réseau";
     const slug = premier[0] ? premier[0].slug : "principal";
+    // Seul ce locataire-la herite des identifiants Pay'm de l'environnement :
+    // c'est l'exploitation qui tournait avant, elle ne doit rien ressaisir.
     const { rows: t } = await client.query(
-      `INSERT INTO tenants (name, slug) VALUES ($1,$2)
+      `INSERT INTO tenants (name, slug, paym_from_env) VALUES ($1,$2,true)
        ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
        RETURNING id`, [nom, slug]);
     const id = t[0].id;
@@ -280,10 +287,21 @@ export async function getTenant(id) {
 // telle quelle, sans rien saisir.
 export async function paymDuRouteur(routerId) {
   const { rows } = await pool.query(
-    `SELECT t.payout_mode, t.paym_client_id, t.paym_client_secret
+    `SELECT t.payout_mode, t.paym_client_id, t.paym_client_secret, t.paym_from_env
        FROM routers r JOIN tenants t ON t.id = r.tenant_id
       WHERE r.id = $1`, [routerId]);
-  return rows[0] || null;
+  const t = rows[0];
+  if (!t) return null;
+  return {
+    ...t,
+    // Le repli sur l'environnement n'existe que pour l'installation d'origine.
+    paym_client_id: t.paym_client_id
+      || (t.paym_from_env ? (config.paym.clientId || null) : null),
+  };
+}
+
+export async function setTenantNom(id, nom) {
+  await pool.query(`UPDATE tenants SET name = $2 WHERE id = $1`, [id, nom]);
 }
 
 export async function setTenantPaym(id, { clientId, clientSecret }) {

@@ -15,6 +15,7 @@ import {
   deletePortalFile, setPortalDir,
   listSponsors, createSponsor, setSponsorImage, toggleSponsor, deleteSponsor,
   dureeRouterOsValide, setTrial, remiseAZero, restaurer,
+  getTenant, setTenantPaym, setTenantNom,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
@@ -86,6 +87,80 @@ adminRouter.get("/admin/login", (req, res) => loginPage(res));
 adminRouter.post("/admin/login", handleLogin);
 adminRouter.post("/admin/logout", handleLogout);
 adminRouter.get("/admin", requireAdmin, (req, res) => res.redirect("/admin/routers"));
+
+// -------------------------------------------------------- mon compte ----
+// Reglages du client du service : son nom, et surtout ses identifiants Pay'm.
+// C'est ce qui fait que l'argent de ses ventes arrive chez lui.
+adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) => {
+  const t = await getTenant(req.user.tenant_id);
+  if (!t) return res.redirect("/admin/routers");
+  const pose = Boolean(t.paym_client_id);
+
+  res.type("html").send(layout("Mon compte", `
+    <h1>Mon compte</h1>
+    <p class="sub">Réglages de votre organisation.</p>
+    ${bandeauMsg(req)}
+
+    <div class="card">
+      <h2 style="margin-top:0">Nom</h2>
+      <form class="inline" method="post" action="/admin/compte/nom">
+        <label>Organisation <input name="nom" value="${esc(t.name)}" size="26" required></label>
+        <button type="submit">Enregistrer</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Encaissement Pay'm
+        ${pose ? `<span class="pill ok">configuré</span>`
+               : `<span class="pill wait">non configuré</span>`}</h2>
+      <p class="sub" style="margin:0 0 12px">Vos identifiants Pay'm, obtenus
+      auprès de Pay'm pour votre commerce. <strong>L'argent de vos ventes va
+      directement chez vous</strong> — il ne passe jamais par nous. Sans ces
+      identifiants, le portail continue de fonctionner mais le paiement en
+      ligne reste fermé ; les codes vendus de la main à la main, eux, marchent
+      toujours.</p>
+      <form class="inline" method="post" action="/admin/compte/paym">
+        <label>Client ID
+          <input name="client_id" value="${esc(t.paym_client_id || "")}" size="30"></label>
+        <label>Clé secrète
+          <input type="password" name="client_secret" size="26"
+                 placeholder="${t.paym_client_secret ? "inchangée" : "facultatif"}"></label>
+        <button type="submit">Enregistrer</button>
+      </form>
+      <p class="sub" style="margin:12px 0 0">La clé n'est jamais réaffichée :
+      laissez le champ vide pour la conserver. Ces identifiants sont exclus des
+      sauvegardes, au même titre que les jetons de routeur — une sauvegarde
+      circule, et ceux-là ouvrent votre encaissement.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Retour de paiement</h2>
+      <p class="sub" style="margin:0">Dans votre tableau de bord Pay'm, réglez
+      l'URL de retour sur l'adresse de votre portail, par exemple
+      <span class="mono">${esc(publicBase(req))}</span>. Pay'm y renvoie le
+      client après le paiement.</p>
+    </div>`, { active: "compte", user: req.user, side: menuGeneral("g-compte", req.user) }));
+});
+
+adminRouter.post("/admin/compte/nom", requireAdmin, requireOwner, async (req, res) => {
+  const nom = String((req.body || {}).nom || "").trim().slice(0, 80);
+  const retour = (m) => res.redirect("/admin/compte?msg=" + encodeURIComponent(m));
+  if (!nom) return retour("Le nom ne peut pas être vide.");
+  await setTenantNom(req.user.tenant_id, nom);
+  return retour("Nom enregistré.");
+});
+
+adminRouter.post("/admin/compte/paym", requireAdmin, requireOwner, async (req, res) => {
+  const { client_id, client_secret } = req.body || {};
+  await setTenantPaym(req.user.tenant_id, {
+    clientId: String(client_id || "").trim(),
+    clientSecret: String(client_secret || "").trim(),
+  });
+  return res.redirect("/admin/compte?msg=" + encodeURIComponent(
+    String(client_id || "").trim()
+      ? "Identifiants enregistrés. Le paiement en ligne est actif pour vos routeurs."
+      : "Identifiants effacés. Le paiement en ligne est fermé ; la vente en espèces continue."));
+});
 
 // ------------------------------------------------------------- comptes ----
 adminRouter.get("/admin/users", requireAdmin, requireOwner, async (req, res) => {
@@ -595,6 +670,7 @@ function menuRouteur(router, actif, user) {
 // Menu des pages qui ne dependent pas d'un routeur (liste, finances).
 function menuGeneral(actif, user) {
   const items = [["/admin/routers", "Routeurs", "g-routeurs"]];
+  if (!user || user.role === "owner") items.push(["/admin/compte", "Mon compte", "g-compte"]);
   // Un vendeur n'a rien a faire dans la caisse ni dans les comptes : les
   // masquer evite de lui proposer des portes qui se refermeront sur lui.
   if (!user || user.role === "owner") {

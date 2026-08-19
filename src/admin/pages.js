@@ -17,7 +17,7 @@ import {
   dureeRouterOsValide, setTrial, remiseAZero, restaurer,
   getTenant, setTenantPaym, setTenantNom, listTenants, setTenantActif,
   creerOrganisation, slugLibre, creerInvitation, listInvitations,
-  invitationValide, consommerInvitation, supprimerInvitation,
+  invitationValide, supprimerInvitation,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
@@ -134,15 +134,16 @@ adminRouter.post("/inscription/:token", async (req, res) => {
     return pageInscription(res, token, "Cette adresse est déjà utilisée.", v);
   }
 
+  // Le jeton part avec la création : elle consomme l'invitation dans la même
+  // transaction, ou ne se fait pas. Deux inscriptions lancées ensemble avec
+  // le même lien ne peuvent donc pas créer deux organisations.
   const org = await creerOrganisation({
     nom: String(organisation).trim().slice(0, 80),
     slug: await slugLibre(organisation),
-    email, motDePasse: password,
+    email, motDePasse: password, token,
   });
-  // L'invitation se consomme APRES la creation : si celle-ci echoue, le lien
-  // reste utilisable au lieu d'etre perdu.
-  if (!await consommerInvitation(token, org.tenant.id)) {
-    console.warn(`[inscription] invitation ${token} déjà consommée en parallèle`);
+  if (!org) {
+    return pageInscription(res, token, "Ce lien vient d'être utilisé. Demandez-en un nouveau.", v);
   }
   res.redirect("/admin/login");
 });

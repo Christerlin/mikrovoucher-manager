@@ -534,12 +534,30 @@ export function verifierMotDePasse(motDePasse, empreinte) {
 // Cree une organisation et son premier proprietaire d'un seul tenant : sans
 // cela, un compte sans organisation ne verrait rien et ne pourrait rien
 // reparer lui-meme.
-export async function creerOrganisation({ nom, slug, email, motDePasse, platformAdmin = false }) {
+export async function creerOrganisation({ nom, slug, email, motDePasse, platformAdmin = false, token = null }) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // L'invitation se consomme dans LA MEME transaction que la creation.
+    // La consommer apres laissait deux inscriptions simultanees creer deux
+    // organisations avec un seul lien ; la consommer avant, dans une
+    // transaction separee, aurait brule le lien si la creation echouait.
+    // Ici, l'un ne va pas sans l'autre.
+    if (token !== null) {
+      const { rowCount } = await client.query(
+        `UPDATE invitations SET used_at = now()
+          WHERE token = $1 AND used_at IS NULL AND expires_at > now()`, [token]);
+      if (rowCount !== 1) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+    }
     const { rows: t } = await client.query(
       `INSERT INTO tenants (name, slug) VALUES ($1,$2) RETURNING *`, [nom, slug]);
+    if (token !== null) {
+      await client.query(`UPDATE invitations SET tenant_id = $2 WHERE token = $1`,
+        [token, t[0].id]);
+    }
     const { rows: u } = await client.query(
       `INSERT INTO users (email, name, pass_hash, role, tenant_id, platform_admin)
        VALUES ($1,$2,$3,'owner',$4,$5) RETURNING *`,
@@ -592,15 +610,6 @@ export async function invitationValide(token) {
     `SELECT * FROM invitations
       WHERE token = $1 AND used_at IS NULL AND expires_at > now()`, [String(token || "")]);
   return rows[0] || null;
-}
-
-export async function consommerInvitation(token, tenantId) {
-  // La condition used_at IS NULL est dans l'UPDATE : deux inscriptions
-  // simultanees avec le meme lien, une seule passe.
-  const { rowCount } = await pool.query(
-    `UPDATE invitations SET used_at = now(), tenant_id = $2
-      WHERE token = $1 AND used_at IS NULL AND expires_at > now()`, [token, tenantId]);
-  return rowCount === 1;
 }
 
 export async function supprimerInvitation(token) {

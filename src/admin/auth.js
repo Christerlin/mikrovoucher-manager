@@ -14,7 +14,7 @@ import { safeEqual } from "../codes.js";
 import { layout } from "./html.js";
 import {
   compterUtilisateurs, getUserByEmail, getUserById, verifierMotDePasse,
-  touchUserLogin, createUser, getTenant,
+  touchUserLogin, createUser, getTenant, etatAbonnement,
 } from "../db.js";
 
 const SESSION_COOKIE = "mvm_session";
@@ -70,6 +70,11 @@ async function utilisateurDeLaRequete(req) {
   if (user.tenant_id) {
     const t = await getTenant(user.tenant_id);
     if (!t || !t.active) return null;
+    // Abonnement échu, délai de grâce passé : le tableau de bord se ferme.
+    // Le portail continue de servir les codes déjà vendus (voir portal.js).
+    const ab = await etatAbonnement(user.tenant_id);
+    if (ab && ab.enRetard) return null;
+    user.abonnement = ab;
   }
   return user;
 }
@@ -177,6 +182,14 @@ export async function handleLogin(req, res) {
     const t = await getTenant(user.tenant_id);
     if (!t || !t.active) {
       return loginPage(res, "Ce compte est suspendu. Contactez le service.");
+    }
+    const ab = await etatAbonnement(user.tenant_id);
+    if (ab && ab.enRetard) {
+      // Dire franchement pourquoi : un « accès refusé » sans raison ferait
+      // croire à une panne et coûterait un appel au support.
+      return loginPage(res,
+        "Abonnement échu. Réglez-le pour rouvrir le tableau de bord ; " +
+        "vos codes déjà vendus continuent de fonctionner.");
     }
   }
   fails.delete(ip);

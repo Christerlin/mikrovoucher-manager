@@ -166,6 +166,16 @@ portalRouter.post("/api/checkout", rateLimit(12), async (req, res) => {
     if (!paymentsEnabled(clientId)) {
       return res.status(503).json({ error: "Paiement en ligne non configuré." });
     }
+    // Abonnement de l'operateur echu : la vente en ligne s'arrete. Les codes
+    // deja vendus, eux, continuent de fonctionner — leurs acheteurs n'y sont
+    // pour rien.
+    const { etatAbonnement } = await import("./db.js");
+    const ab = router.tenant_id ? await etatAbonnement(router.tenant_id) : null;
+    if (ab && ab.enRetard) {
+      return res.status(503).json({
+        error: "La vente en ligne est momentanément indisponible. Voyez le vendeur pour un code.",
+      });
+    }
     const plan = await getPlan(router.id, String(planId || ""));
     if (!plan) return res.status(400).json({ error: "Forfait invalide." });
 

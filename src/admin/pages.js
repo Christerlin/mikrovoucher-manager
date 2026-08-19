@@ -18,6 +18,7 @@ import {
   getTenant, setTenantPaym, setTenantNom, listTenants, setTenantActif,
   creerOrganisation, slugLibre, creerInvitation, listInvitations,
   invitationValide, supprimerInvitation,
+  etatAbonnement, enregistrerPaiement, listPaiements, setTenantTarif,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
@@ -153,6 +154,17 @@ adminRouter.post("/admin/login", handleLogin);
 adminRouter.post("/admin/logout", handleLogout);
 adminRouter.get("/admin", requireAdmin, (req, res) => res.redirect("/admin/routers"));
 
+// Etat d'abonnement en un coup d'oeil. « Exempte » n'est pas un defaut : c'est
+// l'organisation de l'exploitant, ou une periode offerte.
+function abonnementPill(t) {
+  if (!t.prix_routeur_htg || !t.routeurs) return `<span class="pill ok">exempte</span>`;
+  const j = t.jours_restants;
+  if (j === null || j === undefined) return `<span class="pill off">jamais réglé</span>`;
+  if (j < 0) return `<span class="pill off">échu depuis ${-j} j</span>`;
+  if (j <= 7) return `<span class="pill wait">${j} j restants</span>`;
+  return `<span class="pill ok">${j} j restants</span>`;
+}
+
 // -------------------------------------------------- premier démarrage ----
 // Le mot de passe de secours mène ici : créer l'organisation ET son premier
 // propriétaire en une fois. Créer un compte sans organisation donnerait un
@@ -210,11 +222,16 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
             ? `<span class="pill ok">Pay'm posé</span>`
             : `<span class="pill wait">sans Pay'm</span>`}</td>
       <td>${t.active ? "actif" : `<span class="pill off">suspendu</span>`}</td>
+      <td>${abonnementPill(t)}</td>
+      <td class="num">${t.prix_routeur_htg > 0
+            ? `${t.prix_routeur_htg * t.routeurs} HTG`
+            : `<span style="color:var(--ink-soft)">exempte</span>`}</td>
       <td style="font-size:12px;color:var(--ink-soft)">${date(t.created_at)}</td>
       <td style="text-align:right">
         ${t.id === req.user.tenant_id
           ? `<span style="color:var(--ink-soft);font-size:12px">la vôtre</span>`
-          : `<form method="post" action="/admin/plateforme/${t.id}/actif" style="margin:0;display:inline"
+          : `<a class="btn ghost" href="/admin/plateforme/${t.id}">Abonnement</a>
+             <form method="post" action="/admin/plateforme/${t.id}/actif" style="margin:0;display:inline"
                    data-confirm="${t.active ? `Suspendre ${esc(t.name)} ? Ses comptes ne pourront plus entrer. Son portail continuera de servir ses clients.` : ""}">
               <input type="hidden" name="actif" value="${t.active ? "0" : "1"}">
               <button class="${t.active ? "danger" : "btn ghost"}" type="submit">${t.active ? "Suspendre" : "Réactiver"}</button>
@@ -251,7 +268,8 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
     <div class="card">
       <table>
         <tr><th>Organisation</th><th class="num">Routeurs</th><th class="num">Comptes</th>
-            <th>Encaissement</th><th>État</th><th>Créée</th><th></th></tr>
+            <th>Encaissement</th><th>État</th><th>Abonnement</th>
+            <th class="num">Dû / mois</th><th>Créée</th><th></th></tr>
         ${lignesOrgs}
       </table>
       <p class="sub" style="margin:12px 0 0">Suspendre ferme le tableau de bord
@@ -285,6 +303,108 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
                   side: menuGeneral("g-plateforme", req.user) }));
 });
 
+adminRouter.get("/admin/plateforme/:id", requireAdmin, requirePlatform, async (req, res) => {
+  const id = Number(req.params.id);
+  const [ab, paiements] = await Promise.all([etatAbonnement(id), listPaiements(id)]);
+  if (!ab) return res.redirect("/admin/plateforme");
+  const date = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "–");
+
+  const lignes = paiements.map((p) => `
+    <tr>
+      <td style="font-size:12px">${new Date(p.created_at).toLocaleDateString("fr-FR")}</td>
+      <td class="num">${p.montant_htg} HTG</td>
+      <td class="num">${p.mois}</td>
+      <td>${esc(p.methode)}</td>
+      <td style="font-size:12px">${date(p.couvre_jusqu)}</td>
+      <td style="font-size:12px;color:var(--ink-soft)">${esc(p.note || "")}</td>
+    </tr>`).join("");
+
+  res.type("html").send(layout(`Abonnement : ${ab.name}`, `
+    <h1>${esc(ab.name)} ${abonnementPill(ab)}</h1>
+    <p class="sub">Abonnement et paiements.</p>
+    ${bandeauMsg(req)}
+
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-label">Routeurs</div>
+        <div class="kpi-value">${ab.routeurs}</div></div>
+      <div class="kpi"><div class="kpi-label">Prix par routeur</div>
+        <div class="kpi-value">${ab.prix_routeur_htg}<span class="kpi-unit">HTG/mois</span></div></div>
+      <div class="kpi"><div class="kpi-label">Dû par mois</div>
+        <div class="kpi-value">${ab.duMensuel}<span class="kpi-unit">HTG</span></div></div>
+      <div class="kpi"><div class="kpi-label">Payé jusqu'au</div>
+        <div class="kpi-value" style="font-size:16px">${date(ab.paid_until)}</div>
+        <div class="kpi-detail">${ab.grace_days} j de grâce</div></div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Enregistrer un paiement</h2>
+      <p class="sub" style="margin:0 0 12px">L'opérateur vous envoie l'argent
+      (MonCash, NatCash, espèces) ; vous le notez ici. La date de fin repart de
+      celle déjà couverte si elle est encore devant : payer en avance ne fait
+      pas perdre les jours restants.</p>
+      <form class="inline" method="post" action="/admin/plateforme/${id}/paiement">
+        <label>Mois <input type="number" name="mois" min="1" max="24" value="1" size="4" required></label>
+        <label>Montant HTG <input type="number" name="montant" min="0" value="${ab.duMensuel}" size="7" required></label>
+        <label>Moyen
+          <select name="methode">
+            <option value="moncash">MonCash</option>
+            <option value="natcash">NatCash</option>
+            <option value="especes">Espèces</option>
+            <option value="autre">Autre</option>
+          </select></label>
+        <label>Note <input name="note" size="20" placeholder="Référence, qui a payé…"></label>
+        <button type="submit">Enregistrer</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Tarif</h2>
+      <form class="inline" method="post" action="/admin/plateforme/${id}/tarif">
+        <label>Prix par routeur <input type="number" name="prix" min="0" value="${ab.prix_routeur_htg}" size="7" required></label>
+        <label>Jours de grâce <input type="number" name="grace" min="0" max="60" value="${ab.grace_days}" size="4" required></label>
+        <button type="submit">Enregistrer</button>
+      </form>
+      <p class="sub" style="margin:12px 0 0">Prix à zéro : l'organisation n'est
+      jamais en retard. Passé l'échéance et la grâce, son tableau de bord se
+      ferme et la vente en ligne s'arrête ; les codes déjà vendus continuent de
+      fonctionner.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Paiements</h2>
+      <table>
+        <tr><th>Date</th><th class="num">Montant</th><th class="num">Mois</th>
+            <th>Moyen</th><th>Couvre jusqu'au</th><th>Note</th></tr>
+        ${lignes || `<tr><td colspan="6" style="color:var(--ink-soft)">Aucun paiement enregistré.</td></tr>`}
+      </table>
+    </div>
+
+    <a class="btn ghost" href="/admin/plateforme">Retour</a>`,
+    { active: "plateforme", user: req.user, side: menuGeneral("g-plateforme", req.user) }));
+});
+
+adminRouter.post("/admin/plateforme/:id/paiement", requireAdmin, requirePlatform, async (req, res) => {
+  const id = Number(req.params.id);
+  const retour = (m) => res.redirect(`/admin/plateforme/${id}?msg=` + encodeURIComponent(m));
+  const mois = Math.min(24, Math.max(1, Number((req.body || {}).mois) || 1));
+  const montant = Math.max(0, Number((req.body || {}).montant) || 0);
+  const fin = await enregistrerPaiement({
+    tenantId: id, montantHtg: montant, mois,
+    methode: (req.body || {}).methode, note: (req.body || {}).note,
+  });
+  if (!fin) return retour("Organisation introuvable.");
+  return retour(`Paiement enregistré. Couvert jusqu'au ${new Date(fin).toLocaleDateString("fr-FR")}.`);
+});
+
+adminRouter.post("/admin/plateforme/:id/tarif", requireAdmin, requirePlatform, async (req, res) => {
+  const id = Number(req.params.id);
+  await setTenantTarif(id, {
+    prixRouteur: (req.body || {}).prix,
+    graceDays: (req.body || {}).grace,
+  });
+  res.redirect(`/admin/plateforme/${id}?msg=` + encodeURIComponent("Tarif enregistré."));
+});
+
 adminRouter.post("/admin/plateforme/invitations", requireAdmin, requirePlatform, async (req, res) => {
   await creerInvitation({ note: (req.body || {}).note, parId: req.user.id });
   res.redirect("/admin/plateforme?msg=" + encodeURIComponent("Invitation créée. Copiez le lien et envoyez-le."));
@@ -311,12 +431,29 @@ adminRouter.post("/admin/plateforme/:id/actif", requireAdmin, requirePlatform, a
 adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) => {
   const t = await getTenant(req.user.tenant_id);
   if (!t) return res.redirect("/admin/routers");
+  const ab = await etatAbonnement(req.user.tenant_id);
   const pose = Boolean(t.paym_client_id);
 
   res.type("html").send(layout("Mon compte", `
     <h1>Mon compte</h1>
     <p class="sub">Réglages de votre organisation.</p>
     ${bandeauMsg(req)}
+    ${ab && ab.facture ? `
+      <div class="card" style="border-color:${ab.bientot ? "var(--warn)" : "var(--line)"}">
+        <h2 style="margin-top:0${ab.bientot ? ";color:var(--warn)" : ""}">Abonnement</h2>
+        <p class="sub" style="margin:0">
+          ${ab.routeurs} routeur(s) &#215; ${ab.prix_routeur_htg} HTG =
+          <strong>${ab.duMensuel} HTG par mois</strong>.
+          ${ab.paid_until
+            ? `Réglé jusqu'au <strong>${new Date(ab.paid_until).toLocaleDateString("fr-FR")}</strong>` +
+              (ab.jours_restants !== null ? ` — ${ab.jours_restants} jour(s).` : ".")
+            : "Aucun règlement enregistré."}
+        </p>
+        ${ab.bientot ? `<p class="sub" style="margin:8px 0 0">Pensez à régler :
+        passé l'échéance et ${ab.grace_days} jours de grâce, ce tableau de bord
+        se ferme et la vente en ligne s'arrête. Vos codes déjà vendus, eux,
+        continueront de fonctionner.</p>` : ""}
+      </div>` : ""}
 
     <div class="card">
       <h2 style="margin-top:0">Nom</h2>

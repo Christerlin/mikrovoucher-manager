@@ -393,3 +393,32 @@ est une décision de facturation, pas une conséquence automatique.
 
 On ne peut pas suspendre sa propre organisation : plus personne ne pourrait
 rouvrir.
+
+
+## Abonnement
+
+Le service se facture **par routeur et par mois**. Le prix se règle par
+organisation dans **Plateforme → Abonnement** : un opérateur avec trois
+routeurs paie trois fois. Prix à zéro : l'organisation est exemptée — c'est le
+cas de la vôtre, et de toute période offerte.
+
+L'opérateur vous envoie l'argent comme il peut (MonCash, NatCash, espèces) ;
+vous l'enregistrez sur sa fiche avec le nombre de mois. La date de fin repart
+de celle déjà couverte si elle est encore devant : payer en avance ne fait pas
+perdre les jours restants.
+
+**Ce qui se passe à l'échéance.** Après la date payée plus le délai de grâce
+(sept jours par défaut) :
+
+- le tableau de bord de l'organisation se ferme, sessions ouvertes comprises,
+  avec un message qui dit franchement pourquoi ;
+- la **vente en ligne s'arrête** sur ses portails ;
+- **les codes déjà vendus continuent de fonctionner**, et les codes en papier
+  se vendent toujours. Ses clients ont payé, ils n'y sont pour rien.
+
+Le délai de grâce n'est pas une politesse : dans un pays où un virement peut
+traîner, couper le jour même ferait perdre des clients honnêtes.
+
+L'opérateur voit son échéance dans **Mon compte**, avec un rappel dès qu'il
+reste moins d'une semaine. Une coupure surprise se paie en appels et en
+confiance perdue.

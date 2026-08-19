@@ -154,7 +154,28 @@ export async function initDb() {
       -- pas encore pose ses identifiants encaisserait sur NOTRE compte, en
       -- silence. C'est la pire panne possible de ce systeme.
       paym_from_env      BOOLEAN NOT NULL DEFAULT false,
+      -- Abonnement : un prix par routeur actif et par mois. Zero = exempte
+      -- (l'organisation de l'exploitant, ou une periode offerte).
+      prix_routeur_htg   INT NOT NULL DEFAULT 0,
+      paid_until         DATE,
+      -- Delai apres echeance avant que le service se ferme. Une coupure le
+      -- jour meme, dans un pays ou un virement peut trainer, ferait perdre
+      -- des clients honnetes.
+      grace_days         INT NOT NULL DEFAULT 7,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    -- Historique des paiements d'abonnement, saisis a la main : l'operateur
+    -- envoie l'argent par MonCash ou en especes, on l'enregistre ici.
+    CREATE TABLE IF NOT EXISTS abonnements (
+      id           SERIAL PRIMARY KEY,
+      tenant_id    INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      montant_htg  INT NOT NULL,
+      mois         INT NOT NULL DEFAULT 1,
+      methode      TEXT NOT NULL DEFAULT 'especes',
+      note         TEXT NOT NULL DEFAULT '',
+      couvre_jusqu DATE,
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
     CREATE TABLE IF NOT EXISTS users (
@@ -622,9 +643,79 @@ export async function listTenants() {
   const { rows } = await pool.query(
     `SELECT t.*,
             (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
-            (SELECT count(*)::int FROM users u WHERE u.tenant_id = t.id AND u.active) AS comptes
+            (SELECT count(*)::int FROM users u WHERE u.tenant_id = t.id AND u.active) AS comptes,
+            CASE WHEN t.paid_until IS NULL THEN NULL
+                 ELSE (t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date)
+            END AS jours_restants
        FROM tenants t ORDER BY t.created_at DESC`);
   return rows;
+}
+
+// Etat d'abonnement d'une organisation. Le du se calcule sur les routeurs
+// reellement presents : c'est ce que le client peut verifier lui-meme.
+export async function etatAbonnement(tenantId) {
+  const { rows } = await pool.query(
+    `SELECT t.id, t.name, t.prix_routeur_htg, t.paid_until, t.grace_days, t.active,
+            (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
+            (t.paid_until IS NULL)::boolean AS jamais_paye,
+            CASE WHEN t.paid_until IS NULL THEN NULL
+                 ELSE (t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date)
+            END AS jours_restants
+       FROM tenants t WHERE t.id = $1`, [tenantId]);
+  const t = rows[0];
+  if (!t) return null;
+  const duMensuel = t.prix_routeur_htg * t.routeurs;
+  // Prix a zero : rien n'est du, donc rien ne peut etre en retard.
+  const facture = t.prix_routeur_htg > 0 && t.routeurs > 0;
+  const jours = t.jours_restants;
+  const enRetard = facture && (jours === null || jours < -t.grace_days);
+  const bientot = facture && !enRetard && jours !== null && jours <= 7;
+  return { ...t, duMensuel, facture, enRetard, bientot };
+}
+
+export async function enregistrerPaiement({ tenantId, montantHtg, mois, methode, note }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // On prolonge depuis la date deja couverte si elle est encore devant :
+    // payer en avance ne doit pas faire perdre les jours restants.
+    const { rows } = await client.query(
+      `UPDATE tenants
+          SET paid_until = GREATEST(
+                COALESCE(paid_until, (now() AT TIME ZONE 'America/Port-au-Prince')::date),
+                (now() AT TIME ZONE 'America/Port-au-Prince')::date
+              ) + ($2 || ' months')::interval
+        WHERE id = $1
+        RETURNING paid_until`, [tenantId, mois]);
+    if (rows.length === 0) { await client.query("ROLLBACK"); return null; }
+    await client.query(
+      `INSERT INTO abonnements (tenant_id, montant_htg, mois, methode, note, couvre_jusqu)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [tenantId, montantHtg, mois, methode || "especes", String(note || "").slice(0, 120),
+       rows[0].paid_until]);
+    await client.query("COMMIT");
+    return rows[0].paid_until;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listPaiements(tenantId, limit = 24) {
+  const { rows } = await pool.query(
+    `SELECT * FROM abonnements WHERE tenant_id = $1
+      ORDER BY created_at DESC LIMIT $2`, [tenantId, limit]);
+  return rows;
+}
+
+export async function setTenantTarif(id, { prixRouteur, graceDays }) {
+  await pool.query(
+    `UPDATE tenants SET prix_routeur_htg = $2,
+            grace_days = COALESCE($3, grace_days) WHERE id = $1`,
+    [id, Math.max(0, Number(prixRouteur) || 0),
+     graceDays === undefined ? null : Math.max(0, Number(graceDays) || 0)]);
 }
 
 export async function setTenantActif(id, actif) {

@@ -155,6 +155,17 @@ adminRouter.post("/admin/login", handleLogin);
 adminRouter.post("/admin/logout", handleLogout);
 adminRouter.get("/admin", requireAdmin, (req, res) => res.redirect("/admin/routers"));
 
+// Etat de l'encaissement. Regarder le seul champ en base disait « sans Pay'm »
+// a l'installation d'origine, dont les identifiants vivent dans
+// l'environnement — alors qu'elle encaisse tres bien.
+function encaissementPill(t) {
+  if (t.paym_client_id) return `<span class="pill ok">Pay'm posé</span>`;
+  if (t.paym_from_env && config.paym.clientId) {
+    return `<span class="pill ok" title="Identifiants pris dans les variables d'environnement">Pay'm (environnement)</span>`;
+  }
+  return `<span class="pill wait">sans Pay'm</span>`;
+}
+
 // Etat d'abonnement en un coup d'oeil. « Exempte » n'est pas un defaut : c'est
 // l'organisation de l'exploitant, ou une periode offerte.
 function abonnementPill(t) {
@@ -221,9 +232,7 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
         <div style="font-size:12px;color:var(--ink-soft)" class="mono">${esc(t.slug)}</div></td>
       <td class="num">${t.routeurs}</td>
       <td class="num">${t.comptes}</td>
-      <td>${t.paym_client_id
-            ? `<span class="pill ok">Pay'm posé</span>`
-            : `<span class="pill wait">sans Pay'm</span>`}</td>
+      <td>${encaissementPill(t)}</td>
       <td>${t.active ? "actif" : `<span class="pill off">suspendu</span>`}</td>
       <td>${abonnementPill(t)}</td>
       <td class="num">${t.prix_routeur_htg > 0
@@ -484,6 +493,9 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
   if (!t) return res.redirect("/admin/routers");
   const ab = await etatAbonnement(req.user.tenant_id);
   const pose = Boolean(t.paym_client_id);
+  // Meme nuance ici : « non configuré » alors que les ventes passent ferait
+  // chercher une panne qui n'existe pas.
+  const parEnv = !pose && t.paym_from_env && Boolean(config.paym.clientId);
 
   res.type("html").send(layout("Mon compte", `
     <h1>Mon compte</h1>
@@ -517,7 +529,12 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
     <div class="card">
       <h2 style="margin-top:0">Encaissement Pay'm
         ${pose ? `<span class="pill ok">configuré</span>`
-               : `<span class="pill wait">non configuré</span>`}</h2>
+               : parEnv ? `<span class="pill ok">configuré (environnement)</span>`
+                        : `<span class="pill wait">non configuré</span>`}</h2>
+      ${parEnv ? `<p class="sub" style="margin:0 0 12px">Vos identifiants sont
+      actuellement pris dans les variables d'environnement du serveur —
+      l'encaissement fonctionne. Les saisir ici les rendra modifiables depuis
+      ce tableau de bord ; ils prendront alors le pas sur ceux du serveur.</p>` : ""}
       <p class="sub" style="margin:0 0 12px">Vos identifiants Pay'm, obtenus
       auprès de Pay'm pour votre commerce. <strong>L'argent de vos ventes va
       directement chez vous</strong> — il ne passe jamais par nous. Sans ces

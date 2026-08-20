@@ -21,7 +21,7 @@ import {
   etatAbonnement, enregistrerPaiement, listPaiements, setTenantTarif,
   tableauPlateforme, aRelancer,
   creerPaiementAbonnement, getPaiementAbonnement, confirmerPaiementAbonnement,
-  lireReglages, ecrireReglages,
+  lireReglages, ecrireReglages, appliquerTarifDefaut,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
@@ -177,6 +177,13 @@ function abonnementPill(t) {
   if (du === 0) return `<span class="pill ok">exempte</span>`;
   const j = t.jours_restants;
   if (j === null || j === undefined) return `<span class="pill off">jamais réglé</span>`;
+  // Jamais reglee : le decompte part de sa creation, on le dit pour ne pas
+  // laisser croire a un abonnement deja paye.
+  if (t.jamais_paye) {
+    return j >= 0
+      ? `<span class="pill wait">à régler — ${j} j</span>`
+      : `<span class="pill off">jamais réglé, ${-j} j</span>`;
+  }
   if (j < 0) return `<span class="pill off">échu depuis ${-j} j</span>`;
   if (j <= 7) return `<span class="pill wait">${j} j restants</span>`;
   return `<span class="pill ok">${j} j restants</span>`;
@@ -280,8 +287,10 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
   const lignesRelance = relances.map((r) => {
     const du = r.prix_base_htg + r.prix_routeur_htg * r.routeurs;
     const j = r.jours;
-    const etat = j === null
-      ? `<span class="pill off">jamais réglé</span>`
+    const etat = r.paid_until === null
+      ? (j < -r.grace_days
+          ? `<span class="pill off">jamais réglé, grâce dépassée</span>`
+          : `<span class="pill wait">jamais réglé</span>`)
       : j < -r.grace_days
         ? `<span class="pill off">échu, grâce dépassée</span>`
         : j < 0
@@ -360,6 +369,16 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
       <p class="sub" style="margin:12px 0 0">Un opérateur paie le forfait
       <strong>plus</strong> le prix de chacun de ses routeurs. Mettez le
       forfait à zéro pour ne facturer qu'au routeur, ou l'inverse.</p>
+
+      <form method="post" action="/admin/plateforme/tarif-defaut/appliquer"
+            style="margin-top:12px"
+            data-confirm="Appliquer ce tarif à toutes les organisations qui n'en ont aucun ?">
+        <button class="ghost" type="submit">Appliquer aux organisations sans tarif</button>
+      </form>
+      <p class="sub" style="margin:8px 0 0">Le tarif par défaut ne s'applique
+      qu'au moment de l'inscription : une organisation créée avant lui reste
+      exemptée, et ne voit alors aucun abonnement à régler. Ce bouton la
+      rattrape. La vôtre n'est jamais concernée.</p>
     </div>
 
     <div class="card">
@@ -502,6 +521,14 @@ adminRouter.post("/admin/plateforme/tarif-defaut", requireAdmin, requirePlatform
     "Tarif par défaut enregistré. Il s'appliquera aux prochaines inscriptions."));
 });
 
+adminRouter.post("/admin/plateforme/tarif-defaut/appliquer", requireAdmin, requirePlatform, async (req, res) => {
+  const r = await appliquerTarifDefaut();
+  res.redirect("/admin/plateforme?msg=" + encodeURIComponent(
+    r.n === 0
+      ? "Aucune organisation sans tarif — ou aucun tarif par défaut à appliquer."
+      : `Tarif appliqué à ${r.n} organisation(s) : ${r.noms.join(", ")}.`));
+});
+
 adminRouter.post("/admin/plateforme/invitations", requireAdmin, requirePlatform, async (req, res) => {
   await creerInvitation({ note: (req.body || {}).note, parId: req.user.id });
   res.redirect("/admin/plateforme?msg=" + encodeURIComponent("Invitation créée. Copiez le lien et envoyez-le."));
@@ -538,6 +565,12 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
     <h1>Mon compte</h1>
     <p class="sub">Réglages de votre organisation.</p>
     ${bandeauMsg(req)}
+    ${ab && !ab.facture ? `
+      <div class="card">
+        <h2 style="margin-top:0">Abonnement <span class="pill ok">offert</span></h2>
+        <p class="sub" style="margin:0">Aucun abonnement n'est dû pour votre
+        organisation. Rien à régler.</p>
+      </div>` : ""}
     ${ab && ab.facture ? `
       <div class="card" style="border-color:${ab.bientot ? "var(--warn)" : "var(--line)"}">
         <h2 style="margin-top:0${ab.bientot ? ";color:var(--warn)" : ""}">Abonnement</h2>

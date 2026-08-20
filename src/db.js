@@ -717,9 +717,9 @@ export async function listTenants() {
     `SELECT t.*,
             (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
             (SELECT count(*)::int FROM users u WHERE u.tenant_id = t.id AND u.active) AS comptes,
-            CASE WHEN t.paid_until IS NULL THEN NULL
-                 ELSE (t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date)
-            END AS jours_restants
+            (COALESCE(t.paid_until, (t.created_at AT TIME ZONE 'America/Port-au-Prince')::date)
+             - (now() AT TIME ZONE 'America/Port-au-Prince')::date) AS jours_restants,
+            (t.paid_until IS NULL)::boolean AS jamais_paye
        FROM tenants t ORDER BY t.created_at DESC`);
   return rows;
 }
@@ -759,7 +759,8 @@ export async function tableauPlateforme() {
     WITH t AS (
       SELECT t.*,
              (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
-             (t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date) AS jours
+             (COALESCE(t.paid_until, (t.created_at AT TIME ZONE 'America/Port-au-Prince')::date)
+              - (now() AT TIME ZONE 'America/Port-au-Prince')::date) AS jours
         FROM tenants t
     )
     SELECT
@@ -770,9 +771,9 @@ export async function tableauPlateforme() {
       COALESCE(SUM(prix_base_htg + prix_routeur_htg * routeurs)
                FILTER (WHERE active),0)::int AS revenu_mensuel,
       COUNT(*) FILTER (WHERE active AND prix_base_htg + prix_routeur_htg * routeurs > 0
-                         AND (jours IS NULL OR jours < -grace_days))::int AS en_retard,
+                         AND jours < -grace_days)::int AS en_retard,
       COUNT(*) FILTER (WHERE active AND prix_base_htg + prix_routeur_htg * routeurs > 0
-                         AND jours IS NOT NULL AND jours >= -grace_days AND jours <= 7)::int AS bientot
+                         AND jours >= -grace_days AND jours <= 7)::int AS bientot
     FROM t`);
   const { rows: enc } = await pool.query(`
     SELECT COALESCE(SUM(montant_htg),0)::int AS mois_htg, COUNT(*)::int AS mois_n
@@ -788,7 +789,8 @@ export async function aRelancer() {
   const { rows } = await pool.query(`
     SELECT t.id, t.name, t.prix_base_htg, t.prix_routeur_htg, t.grace_days, t.paid_until,
            (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
-           (t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date) AS jours
+           (COALESCE(t.paid_until, (t.created_at AT TIME ZONE 'America/Port-au-Prince')::date)
+            - (now() AT TIME ZONE 'America/Port-au-Prince')::date) AS jours
       FROM tenants t
      WHERE t.active
        AND t.prix_base_htg
@@ -802,12 +804,15 @@ export async function aRelancer() {
 export async function etatAbonnement(tenantId) {
   const { rows } = await pool.query(
     `SELECT t.id, t.name, t.prix_base_htg, t.prix_routeur_htg,
-            t.paid_until, t.grace_days, t.active,
+            t.paid_until, t.grace_days, t.active, t.created_at,
             (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
             (t.paid_until IS NULL)::boolean AS jamais_paye,
-            CASE WHEN t.paid_until IS NULL THEN NULL
-                 ELSE (t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date)
-            END AS jours_restants
+            -- Une organisation qui n'a jamais reglé compte depuis sa creation,
+            -- pas depuis une echeance qui n'existe pas : sinon elle serait en
+            -- retard a la minute ou elle s'inscrit, avant meme d'avoir pu
+            -- brancher un routeur.
+            (COALESCE(t.paid_until, (t.created_at AT TIME ZONE 'America/Port-au-Prince')::date)
+             - (now() AT TIME ZONE 'America/Port-au-Prince')::date) AS jours_restants
        FROM tenants t WHERE t.id = $1`, [tenantId]);
   const t = rows[0];
   if (!t) return null;
@@ -815,7 +820,7 @@ export async function etatAbonnement(tenantId) {
   // Rien a payer : rien ne peut etre en retard.
   const facture = duMensuel > 0;
   const jours = t.jours_restants;
-  const enRetard = facture && (jours === null || jours < -t.grace_days);
+  const enRetard = facture && jours < -t.grace_days;
   const bientot = facture && !enRetard && jours !== null && jours <= 7;
   return { ...t, duMensuel, facture, enRetard, bientot };
 }
@@ -903,6 +908,21 @@ export async function confirmerPaiementAbonnement(reference, transactionId) {
   } finally {
     client.release();
   }
+}
+
+// Applique le tarif du service aux organisations restees sans tarif : celles
+// creees avant qu'un defaut existe, ou avant qu'on y pense. L'organisation de
+// l'exploitant est ecartee — elle ne se facture pas elle-meme.
+export async function appliquerTarifDefaut() {
+  const t = await lireReglages();
+  if (t.prixBase === 0 && t.prixRouteur === 0) return { n: 0, noms: [] };
+  const { rows } = await pool.query(
+    `UPDATE tenants SET prix_base_htg = $1, prix_routeur_htg = $2, grace_days = $3
+      WHERE prix_base_htg = 0 AND prix_routeur_htg = 0
+        AND id NOT IN (SELECT tenant_id FROM users
+                        WHERE platform_admin AND tenant_id IS NOT NULL)
+      RETURNING name`, [t.prixBase, t.prixRouteur, t.graceJours]);
+  return { n: rows.length, noms: rows.map((r) => r.name) };
 }
 
 export async function setTenantTarif(id, { prixBase, prixRouteur, graceDays }) {

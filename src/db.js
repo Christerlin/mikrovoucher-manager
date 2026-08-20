@@ -653,6 +653,52 @@ export async function listTenants() {
 
 // Etat d'abonnement d'une organisation. Le du se calcule sur les routeurs
 // reellement presents : c'est ce que le client peut verifier lui-meme.
+// Vue d'ensemble du service, pour celui qui l'exploite. Le revenu recurrent
+// se calcule sur les routeurs presents et les tarifs poses : c'est ce qui
+// rentrera si tout le monde paie, pas ce qui est deja encaisse.
+export async function tableauPlateforme() {
+  const { rows } = await pool.query(`
+    WITH t AS (
+      SELECT t.*,
+             (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
+             (t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date) AS jours
+        FROM tenants t
+    )
+    SELECT
+      COUNT(*) FILTER (WHERE active)::int AS orgs_actives,
+      COUNT(*) FILTER (WHERE NOT active)::int AS orgs_suspendues,
+      COALESCE(SUM(routeurs),0)::int AS routeurs_total,
+      COALESCE(SUM(routeurs) FILTER (WHERE prix_routeur_htg > 0),0)::int AS routeurs_factures,
+      COALESCE(SUM(prix_routeur_htg * routeurs) FILTER (WHERE active),0)::int AS revenu_mensuel,
+      COUNT(*) FILTER (WHERE active AND prix_routeur_htg > 0 AND routeurs > 0
+                         AND (jours IS NULL OR jours < -grace_days))::int AS en_retard,
+      COUNT(*) FILTER (WHERE active AND prix_routeur_htg > 0 AND routeurs > 0
+                         AND jours IS NOT NULL AND jours >= -grace_days AND jours <= 7)::int AS bientot
+    FROM t`);
+  const { rows: enc } = await pool.query(`
+    SELECT COALESCE(SUM(montant_htg),0)::int AS mois_htg, COUNT(*)::int AS mois_n
+      FROM abonnements
+     WHERE date_trunc('month', created_at AT TIME ZONE 'America/Port-au-Prince')
+         = date_trunc('month', (now() AT TIME ZONE 'America/Port-au-Prince'))`);
+  return { ...rows[0], ...enc[0] };
+}
+
+// Organisations a relancer : echues, ou a moins d'une semaine de l'echeance.
+// Classees par urgence — la premiere ligne est le premier appel a passer.
+export async function aRelancer() {
+  const { rows } = await pool.query(`
+    SELECT t.id, t.name, t.prix_routeur_htg, t.grace_days, t.paid_until,
+           (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
+           (t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date) AS jours
+      FROM tenants t
+     WHERE t.active AND t.prix_routeur_htg > 0
+       AND (SELECT count(*) FROM routers r WHERE r.tenant_id = t.id) > 0
+       AND (t.paid_until IS NULL
+            OR t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date <= 7)
+     ORDER BY t.paid_until NULLS FIRST`);
+  return rows;
+}
+
 export async function etatAbonnement(tenantId) {
   const { rows } = await pool.query(
     `SELECT t.id, t.name, t.prix_routeur_htg, t.paid_until, t.grace_days, t.active,

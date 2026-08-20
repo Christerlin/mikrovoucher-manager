@@ -19,6 +19,7 @@ import {
   creerOrganisation, slugLibre, creerInvitation, listInvitations,
   invitationValide, supprimerInvitation,
   etatAbonnement, enregistrerPaiement, listPaiements, setTenantTarif,
+  tableauPlateforme, aRelancer,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
@@ -208,7 +209,9 @@ adminRouter.post("/admin/premier-demarrage", requireAdmin, async (req, res) => {
 
 // ---------------------------------------------------------- plateforme ----
 adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, res) => {
-  const [orgs, invits] = await Promise.all([listTenants(), listInvitations()]);
+  const [orgs, invits, vue, relances] = await Promise.all([
+    listTenants(), listInvitations(), tableauPlateforme(), aRelancer(),
+  ]);
   const base = publicBase(req);
   const date = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "–");
 
@@ -260,10 +263,58 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
       </td>
     </tr>`).join("");
 
+  const lignesRelance = relances.map((r) => {
+    const du = r.prix_routeur_htg * r.routeurs;
+    const j = r.jours;
+    const etat = j === null
+      ? `<span class="pill off">jamais réglé</span>`
+      : j < -r.grace_days
+        ? `<span class="pill off">échu, grâce dépassée</span>`
+        : j < 0
+          ? `<span class="pill wait">échu, ${r.grace_days + j} j de grâce</span>`
+          : `<span class="pill wait">échéance dans ${j} j</span>`;
+    return `
+      <tr>
+        <td><a href="/admin/plateforme/${r.id}"><strong>${esc(r.name)}</strong></a></td>
+        <td>${etat}</td>
+        <td class="num">${du} HTG</td>
+        <td style="font-size:12px;color:var(--ink-soft)">${r.routeurs} routeur(s)</td>
+      </tr>`;
+  }).join("");
+
   res.type("html").send(layout("Plateforme", `
     <h1>Plateforme</h1>
-    <p class="sub">Les organisations qui utilisent le service.</p>
+    <p class="sub">Vue d'ensemble du service.</p>
     ${bandeauMsg(req)}
+
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-label">Organisations</div>
+        <div class="kpi-value">${vue.orgs_actives}</div>
+        <div class="kpi-detail">${vue.orgs_suspendues > 0 ? `${vue.orgs_suspendues} suspendue(s)` : "toutes actives"}</div></div>
+      <div class="kpi"><div class="kpi-label">Routeurs</div>
+        <div class="kpi-value">${vue.routeurs_total}</div>
+        <div class="kpi-detail">${vue.routeurs_factures} facturé(s)</div></div>
+      <div class="kpi"><div class="kpi-label">Revenu mensuel</div>
+        <div class="kpi-value">${vue.revenu_mensuel}<span class="kpi-unit">HTG</span></div>
+        <div class="kpi-detail">si tout le monde règle</div></div>
+      <div class="kpi"><div class="kpi-label">Encaissé ce mois</div>
+        <div class="kpi-value">${vue.mois_htg}<span class="kpi-unit">HTG</span></div>
+        <div class="kpi-detail">${vue.mois_n} règlement(s)</div></div>
+      <div class="kpi"><div class="kpi-label">À relancer</div>
+        <div class="kpi-value">${vue.en_retard + vue.bientot}</div>
+        <div class="kpi-detail">${vue.en_retard} en retard</div></div>
+    </div>
+
+    ${lignesRelance ? `
+    <div class="card" style="border-color:${vue.en_retard > 0 ? "var(--warn)" : "var(--line)"}">
+      <h2 style="margin-top:0${vue.en_retard > 0 ? ";color:var(--warn)" : ""}">À relancer</h2>
+      <table>
+        <tr><th>Organisation</th><th>Situation</th><th class="num">Dû / mois</th><th></th></tr>
+        ${lignesRelance}
+      </table>
+      <p class="sub" style="margin:12px 0 0">Classées par urgence : la première
+      ligne est le premier appel à passer.</p>
+    </div>` : ""}
 
     <div class="card">
       <table>

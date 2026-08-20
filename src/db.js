@@ -331,6 +331,23 @@ export async function backfillTenants() {
 // porte le drapeau d'exploitant : la page Plateforme serait inaccessible a
 // tout le monde, y compris a celui qui a installe le service. On promeut donc
 // le plus ancien proprietaire actif, une seule fois.
+// Le drapeau de repli est arrive apres la table : sur une installation ou le
+// locataire existait deja, il vaut false par defaut — et l'exploitation qui
+// tournait perdrait son encaissement en ligne du jour au lendemain. On le
+// pose sur le plus ancien locataire, une seule fois, et seulement si des
+// identifiants existent dans l'environnement.
+export async function backfillPaymEnv() {
+  if (!config.paym.clientId) return null;
+  const { rows: deja } = await pool.query(
+    `SELECT 1 FROM tenants WHERE paym_from_env LIMIT 1`);
+  if (deja.length > 0) return null;
+  const { rows } = await pool.query(
+    `UPDATE tenants SET paym_from_env = true
+      WHERE id = (SELECT id FROM tenants ORDER BY created_at, id LIMIT 1)
+      RETURNING name`);
+  return rows[0] ? rows[0].name : null;
+}
+
 export async function backfillPlatformAdmin() {
   const { rows: deja } = await pool.query(
     `SELECT 1 FROM users WHERE platform_admin AND active LIMIT 1`);

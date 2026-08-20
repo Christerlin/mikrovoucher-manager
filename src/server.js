@@ -1,8 +1,8 @@
 import express from "express";
 import cors from "cors";
 import { config } from "./config.js";
-import { initDb, backfillTenants, backfillPlatformAdmin, backfillPlanValidity,
-         vouchersDejaEchus, routersSilencieux } from "./db.js";
+import { initDb, backfillTenants, backfillPaymEnv, backfillPlatformAdmin,
+         backfillPlanValidity, vouchersDejaEchus, routersSilencieux } from "./db.js";
 import { portalRouter, reconcile } from "./portal.js";
 import { agentRouter } from "./agent.js";
 import { adminRouter } from "./admin/pages.js";
@@ -87,6 +87,8 @@ async function main() {
   if (rattaches) {
     console.log(`[tenants] « ${rattaches.nom} » créé : ${rattaches.routeurs} routeur(s), ${rattaches.comptes} compte(s) rattachés`);
   }
+  const encaisse = await backfillPaymEnv();
+  if (encaisse) console.log(`[paym] « ${encaisse} » conserve les identifiants de l'environnement`);
   const promu = await backfillPlatformAdmin();
   if (promu) console.log(`[plateforme] ${promu} devient administrateur du service`);
   const majores = await backfillPlanValidity();

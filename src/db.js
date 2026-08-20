@@ -267,7 +267,19 @@ export async function initDb() {
     -- Apres la creation de la table, sinon un demarrage sur base neuve
     -- echoue : la colonne serait ajoutee a une table qui n'existe pas encore.
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS recharge_code TEXT;
+    -- Rattrapage des colonnes ajoutees apres coup. CREATE TABLE IF NOT EXISTS
+    -- laisse intacte une table deja creee par une version precedente : sans
+    -- ces ALTER, la colonne n'apparaitrait jamais sur une base en service.
     ALTER TABLE users   ADD COLUMN IF NOT EXISTS tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE;
+    ALTER TABLE users   ADD COLUMN IF NOT EXISTS platform_admin BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS payout_mode TEXT NOT NULL DEFAULT 'direct';
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paym_client_id TEXT;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paym_client_secret TEXT;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paym_from_env BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS prix_routeur_htg INT NOT NULL DEFAULT 0;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paid_until DATE;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS grace_days INT NOT NULL DEFAULT 7;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE routers ADD COLUMN IF NOT EXISTS tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE;
     CREATE INDEX IF NOT EXISTS routers_tenant_idx ON routers (tenant_id);
     CREATE INDEX IF NOT EXISTS users_tenant_idx   ON users (tenant_id);

@@ -315,6 +315,22 @@ export async function backfillTenants() {
   }
 }
 
+// Sur une installation qui existait avant les organisations, personne ne
+// porte le drapeau d'exploitant : la page Plateforme serait inaccessible a
+// tout le monde, y compris a celui qui a installe le service. On promeut donc
+// le plus ancien proprietaire actif, une seule fois.
+export async function backfillPlatformAdmin() {
+  const { rows: deja } = await pool.query(
+    `SELECT 1 FROM users WHERE platform_admin AND active LIMIT 1`);
+  if (deja.length > 0) return null;
+  const { rows } = await pool.query(
+    `UPDATE users SET platform_admin = true
+      WHERE id = (SELECT id FROM users WHERE role = 'owner' AND active
+                   ORDER BY created_at, id LIMIT 1)
+      RETURNING email`);
+  return rows[0] ? rows[0].email : null;
+}
+
 export async function getTenant(id) {
   const { rows } = await pool.query(`SELECT * FROM tenants WHERE id = $1`, [id]);
   return rows[0] || null;

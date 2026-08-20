@@ -402,8 +402,13 @@ organisation dans **Plateforme → Abonnement** : un opérateur avec trois
 routeurs paie trois fois. Prix à zéro : l'organisation est exemptée — c'est le
 cas de la vôtre, et de toute période offerte.
 
-L'opérateur vous envoie l'argent comme il peut (MonCash, NatCash, espèces) ;
-vous l'enregistrez sur sa fiche avec le nombre de mois. La date de fin repart
+L'opérateur règle lui-même depuis **Mon compte**, par MonCash, NatCash ou
+Kashpaw : il choisit le nombre de mois, paie dans l'onglet qui s'ouvre, et son
+échéance avance dès que Pay'm confirme. Cet encaissement-là se fait avec les
+identifiants **du service** — c'est nous qui vendons à ce moment-là, pas lui.
+
+Vous pouvez aussi enregistrer un règlement à la main sur sa fiche (espèces,
+virement, arrangement) avec le nombre de mois. La date de fin repart
 de celle déjà couverte si elle est encore devant : payer en avance ne fait pas
 perdre les jours restants.
 

@@ -175,7 +175,12 @@ export async function initDb() {
       methode      TEXT NOT NULL DEFAULT 'especes',
       note         TEXT NOT NULL DEFAULT '',
       couvre_jusqu DATE,
-      created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      -- Paiement en ligne : la ligne nait PENDING et n'etend l'abonnement
+      -- qu'une fois Pay'm confirme. Une saisie manuelle nait PAID.
+      reference    TEXT UNIQUE,
+      status       TEXT NOT NULL DEFAULT 'PAID',
+      paym_transaction_id TEXT
     );
 
     CREATE TABLE IF NOT EXISTS users (
@@ -280,6 +285,11 @@ export async function initDb() {
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paid_until DATE;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS grace_days INT NOT NULL DEFAULT 7;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;
+    ALTER TABLE abonnements ADD COLUMN IF NOT EXISTS reference TEXT;
+    ALTER TABLE abonnements ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'PAID';
+    ALTER TABLE abonnements ADD COLUMN IF NOT EXISTS paym_transaction_id TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS abonnements_reference_idx
+      ON abonnements (reference) WHERE reference IS NOT NULL;
     ALTER TABLE routers ADD COLUMN IF NOT EXISTS tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE;
     CREATE INDEX IF NOT EXISTS routers_tenant_idx ON routers (tenant_id);
     CREATE INDEX IF NOT EXISTS users_tenant_idx   ON users (tenant_id);
@@ -780,8 +790,8 @@ export async function enregistrerPaiement({ tenantId, montantHtg, mois, methode,
         RETURNING paid_until`, [tenantId, mois]);
     if (rows.length === 0) { await client.query("ROLLBACK"); return null; }
     await client.query(
-      `INSERT INTO abonnements (tenant_id, montant_htg, mois, methode, note, couvre_jusqu)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
+      `INSERT INTO abonnements (tenant_id, montant_htg, mois, methode, note, couvre_jusqu, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'PAID')`,
       [tenantId, montantHtg, mois, methode || "especes", String(note || "").slice(0, 120),
        rows[0].paid_until]);
     await client.query("COMMIT");
@@ -799,6 +809,54 @@ export async function listPaiements(tenantId, limit = 24) {
     `SELECT * FROM abonnements WHERE tenant_id = $1
       ORDER BY created_at DESC LIMIT $2`, [tenantId, limit]);
   return rows;
+}
+
+// --------------------------------- abonnement paye en ligne ----
+
+export async function creerPaiementAbonnement({ tenantId, montantHtg, mois, methode, reference }) {
+  const { rows } = await pool.query(
+    `INSERT INTO abonnements (tenant_id, montant_htg, mois, methode, reference, status, note)
+     VALUES ($1,$2,$3,$4,$5,'PENDING','en ligne') RETURNING *`,
+    [tenantId, montantHtg, mois, methode, reference]);
+  return rows[0];
+}
+
+export async function getPaiementAbonnement(reference) {
+  const { rows } = await pool.query(
+    `SELECT * FROM abonnements WHERE reference = $1`, [reference]);
+  return rows[0] || null;
+}
+
+// Confirme un paiement en ligne et prolonge l'abonnement. Le passage
+// PENDING -> PAID est la condition de l'UPDATE : deux verifications
+// simultanees ne peuvent pas crediter deux fois les memes mois.
+export async function confirmerPaiementAbonnement(reference, transactionId) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `UPDATE abonnements SET status = 'PAID', paym_transaction_id = $2
+        WHERE reference = $1 AND status = 'PENDING'
+        RETURNING tenant_id, mois`, [reference, transactionId || null]);
+    if (rows.length === 0) { await client.query("ROLLBACK"); return null; }
+    const { tenant_id, mois } = rows[0];
+    const { rows: t } = await client.query(
+      `UPDATE tenants
+          SET paid_until = GREATEST(
+                COALESCE(paid_until, (now() AT TIME ZONE 'America/Port-au-Prince')::date),
+                (now() AT TIME ZONE 'America/Port-au-Prince')::date
+              ) + ($2 || ' months')::interval
+        WHERE id = $1 RETURNING paid_until`, [tenant_id, mois]);
+    await client.query(`UPDATE abonnements SET couvre_jusqu = $2 WHERE reference = $1`,
+      [reference, t[0].paid_until]);
+    await client.query("COMMIT");
+    return t[0].paid_until;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function setTenantTarif(id, { prixRouteur, graceDays }) {

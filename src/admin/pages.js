@@ -20,10 +20,13 @@ import {
   invitationValide, supprimerInvitation,
   etatAbonnement, enregistrerPaiement, listPaiements, setTenantTarif,
   tableauPlateforme, aRelancer,
+  creerPaiementAbonnement, getPaiementAbonnement, confirmerPaiementAbonnement,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
-import { generateRouterToken, generateVoucherCode, durationToSeconds } from "../codes.js";
+import { generateRouterToken, generateVoucherCode, durationToSeconds,
+         generateReference } from "../codes.js";
+import { createPayment, verifyPayment } from "../paym.js";
 import { layout, esc } from "./html.js";
 import { requireAdmin, requireOwner, requirePlatform, loginPage, handleLogin,
          handleLogout, reposerSession } from "./auth.js";
@@ -516,6 +519,71 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
         passé l'échéance et ${ab.grace_days} jours de grâce, ce tableau de bord
         se ferme et la vente en ligne s'arrête. Vos codes déjà vendus, eux,
         continueront de fonctionner.</p>` : ""}
+
+        ${config.paym.clientId ? `
+        <div style="margin-top:14px;padding-top:14px;border-top:1px dotted var(--line)">
+          <form class="inline" id="formAbo" style="margin:0">
+            <label>Mois
+              <select name="mois" id="aboMois">
+                ${[1, 2, 3, 6, 12].map((m) =>
+                  `<option value="${m}">${m} mois — ${ab.duMensuel * m} HTG</option>`).join("")}
+              </select></label>
+            <label>Moyen
+              <select name="methode" id="aboMethode">
+                <option value="moncash">MonCash</option>
+                <option value="natcash">NatCash</option>
+                <option value="kashpaw">Kashpaw</option>
+              </select></label>
+            <button type="submit" id="aboBtn">Payer mon abonnement</button>
+          </form>
+          <p class="sub" id="aboEtat" style="margin:10px 0 0"></p>
+        </div>
+
+        <script>
+          (function () {
+            var f = document.getElementById("formAbo");
+            var btn = document.getElementById("aboBtn");
+            var etat = document.getElementById("aboEtat");
+            var minuteur = null;
+            f.addEventListener("submit", function (e) {
+              e.preventDefault();
+              btn.disabled = true;
+              etat.textContent = "Ouverture du paiement…";
+              fetch("/admin/compte/abonnement", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: "mois=" + document.getElementById("aboMois").value +
+                      "&methode=" + document.getElementById("aboMethode").value,
+              }).then(function (r) { return r.json(); }).then(function (d) {
+                if (!d.redirectUrl) throw new Error(d.error || "Échec");
+                // Nouvel onglet : Pay'm renvoie vers le portail, pas ici. La
+                // page reste donc ouverte et interroge le résultat elle-même.
+                window.open(d.redirectUrl, "_blank");
+                etat.textContent = "Terminez le paiement dans l'onglet ouvert. " +
+                  "Cette page se met à jour toute seule.";
+                suivre(d.reference, 0);
+              }).catch(function (err) {
+                btn.disabled = false;
+                etat.textContent = err.message;
+              });
+            });
+            function suivre(ref, n) {
+              if (n > 60) { etat.textContent = "Toujours rien reçu. Rechargez la page plus tard."; btn.disabled = false; return; }
+              clearTimeout(minuteur);
+              minuteur = setTimeout(function () {
+                fetch("/admin/compte/abonnement/" + encodeURIComponent(ref))
+                  .then(function (r) { return r.json(); })
+                  .then(function (d) {
+                    if (d.status === "PAID") {
+                      etat.textContent = "Paiement reçu. Abonnement prolongé.";
+                      setTimeout(function () { location.reload(); }, 1500);
+                    } else { suivre(ref, n + 1); }
+                  })
+                  .catch(function () { suivre(ref, n + 1); });
+              }, 5000);
+            }
+          })();
+        </script>` : ""}
       </div>` : ""}
 
     <div class="card">
@@ -562,6 +630,67 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
       <span class="mono">${esc(publicBase(req))}</span>. Pay'm y renvoie le
       client après le paiement.</p>
     </div>`, { active: "compte", user: req.user, side: menuGeneral("g-compte", req.user) }));
+});
+
+// L'abonnement se règle depuis le tableau de bord, par MonCash, NatCash ou
+// Kashpaw. L'encaissement se fait avec les identifiants du service — c'est
+// nous qui vendons ici, pas l'opérateur.
+adminRouter.post("/admin/compte/abonnement", requireAdmin, requireOwner, async (req, res) => {
+  try {
+    if (!config.paym.clientId) {
+      return res.status(503).json({ error: "Paiement en ligne indisponible. Contactez le service." });
+    }
+    const ab = await etatAbonnement(req.user.tenant_id);
+    if (!ab || !ab.facture) {
+      return res.status(400).json({ error: "Aucun abonnement à régler." });
+    }
+    const mois = Math.min(12, Math.max(1, Number((req.body || {}).mois) || 1));
+    const methode = ["moncash", "natcash", "kashpaw"].includes((req.body || {}).methode)
+      ? (req.body || {}).methode : "moncash";
+    const montant = ab.duMensuel * mois;
+
+    const reference = "ABO-" + generateReference();
+    // La ligne nait AVANT l'appel a Pay'm : si la creation du paiement echoue,
+    // il reste une trace de la tentative, et surtout la reference existe deja
+    // quand le client revient.
+    await creerPaiementAbonnement({
+      tenantId: req.user.tenant_id, montantHtg: montant, mois, methode, reference,
+    });
+    const { redirectUrl } = await createPayment({
+      reference, montantHtg: montant, method: methode,
+      clientId: config.paym.clientId,
+    });
+    res.json({ reference, redirectUrl, montant, mois });
+  } catch (err) {
+    console.error("[abonnement:paiement]", err.message);
+    res.status(502).json({ error: "Échec de la création du paiement. Réessayez." });
+  }
+});
+
+// Interrogé par la page pendant que l'opérateur paie. Pay'm n'a pas de
+// webhook : c'est nous qui demandons.
+adminRouter.get("/admin/compte/abonnement/:reference", requireAdmin, requireOwner, async (req, res) => {
+  try {
+    const ligne = await getPaiementAbonnement(String(req.params.reference));
+    // Un opérateur ne suit que ses propres règlements.
+    if (!ligne || ligne.tenant_id !== req.user.tenant_id) {
+      return res.status(404).json({ error: "Inconnu." });
+    }
+    if (ligne.status === "PAID") {
+      return res.json({ status: "PAID", couvreJusqu: ligne.couvre_jusqu });
+    }
+    const r = await verifyPayment(ligne.reference, config.paym.clientId);
+    if (!r.paid) return res.json({ status: "PENDING" });
+    if (!(r.amountHtg >= ligne.montant_htg)) {
+      console.warn(`[abonnement] sous-paiement ${ligne.reference}`);
+      return res.json({ status: "PENDING", insuffisant: true });
+    }
+    const fin = await confirmerPaiementAbonnement(ligne.reference, r.transactionId);
+    return res.json({ status: "PAID", couvreJusqu: fin });
+  } catch (err) {
+    console.error("[abonnement:suivi]", err.message);
+    res.status(502).json({ error: "Indisponible." });
+  }
 });
 
 adminRouter.post("/admin/compte/nom", requireAdmin, requireOwner, async (req, res) => {

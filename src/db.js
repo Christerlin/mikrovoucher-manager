@@ -156,6 +156,10 @@ export async function initDb() {
       paym_from_env      BOOLEAN NOT NULL DEFAULT false,
       -- Abonnement : un prix par routeur actif et par mois. Zero = exempte
       -- (l'organisation de l'exploitant, ou une periode offerte).
+      -- Tarif en deux parties : un forfait par organisation, plus un prix par
+      -- routeur. Un petit operateur a un routeur, un gros en a cinq — la part
+      -- variable suit la valeur qu'il tire du service.
+      prix_base_htg      INT NOT NULL DEFAULT 0,
       prix_routeur_htg   INT NOT NULL DEFAULT 0,
       paid_until         DATE,
       -- Delai apres echeance avant que le service se ferme. Une coupure le
@@ -167,6 +171,13 @@ export async function initDb() {
 
     -- Historique des paiements d'abonnement, saisis a la main : l'operateur
     -- envoie l'argent par MonCash ou en especes, on l'enregistre ici.
+    -- Reglages du service. Une table cle/valeur : ces reglages sont rares et
+    -- sans schema stable, une colonne par reglage vieillirait mal.
+    CREATE TABLE IF NOT EXISTS reglages (
+      cle    TEXT PRIMARY KEY,
+      valeur TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS abonnements (
       id           SERIAL PRIMARY KEY,
       tenant_id    INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -281,6 +292,7 @@ export async function initDb() {
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paym_client_id TEXT;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paym_client_secret TEXT;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paym_from_env BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS prix_base_htg INT NOT NULL DEFAULT 0;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS prix_routeur_htg INT NOT NULL DEFAULT 0;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paid_until DATE;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS grace_days INT NOT NULL DEFAULT 7;
@@ -628,8 +640,14 @@ export async function creerOrganisation({ nom, slug, email, motDePasse, platform
         return null;
       }
     }
+    // Une organisation qui arrive par invitation herite du tarif du service :
+    // sinon elle serait exemptee jusqu'a ce qu'on y pense, et on n'y pense pas.
+    const tarif = token !== null ? await lireReglages() : null;
     const { rows: t } = await client.query(
-      `INSERT INTO tenants (name, slug) VALUES ($1,$2) RETURNING *`, [nom, slug]);
+      `INSERT INTO tenants (name, slug, prix_base_htg, prix_routeur_htg, grace_days)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [nom, slug, tarif ? tarif.prixBase : 0, tarif ? tarif.prixRouteur : 0,
+       tarif ? tarif.graceJours : 7]);
     if (token !== null) {
       await client.query(`UPDATE invitations SET tenant_id = $2 WHERE token = $1`,
         [token, t[0].id]);
@@ -711,6 +729,31 @@ export async function listTenants() {
 // Vue d'ensemble du service, pour celui qui l'exploite. Le revenu recurrent
 // se calcule sur les routeurs presents et les tarifs poses : c'est ce qui
 // rentrera si tout le monde paie, pas ce qui est deja encaisse.
+// ------------------------------------------------------- reglages ----
+
+export async function lireReglages() {
+  const { rows } = await pool.query(`SELECT cle, valeur FROM reglages`);
+  const m = Object.fromEntries(rows.map((r) => [r.cle, r.valeur]));
+  return {
+    prixBase: Number(m.tarif_base_htg) || 0,
+    prixRouteur: Number(m.tarif_routeur_htg) || 0,
+    graceJours: m.tarif_grace_jours === undefined ? 7 : Number(m.tarif_grace_jours),
+  };
+}
+
+export async function ecrireReglages({ prixBase, prixRouteur, graceJours }) {
+  const paires = [
+    ["tarif_base_htg", Math.max(0, Number(prixBase) || 0)],
+    ["tarif_routeur_htg", Math.max(0, Number(prixRouteur) || 0)],
+    ["tarif_grace_jours", Math.max(0, Number(graceJours) || 0)],
+  ];
+  for (const [cle, valeur] of paires) {
+    await pool.query(
+      `INSERT INTO reglages (cle, valeur) VALUES ($1,$2)
+       ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur`, [cle, String(valeur)]);
+  }
+}
+
 export async function tableauPlateforme() {
   const { rows } = await pool.query(`
     WITH t AS (
@@ -724,10 +767,11 @@ export async function tableauPlateforme() {
       COUNT(*) FILTER (WHERE NOT active)::int AS orgs_suspendues,
       COALESCE(SUM(routeurs),0)::int AS routeurs_total,
       COALESCE(SUM(routeurs) FILTER (WHERE prix_routeur_htg > 0),0)::int AS routeurs_factures,
-      COALESCE(SUM(prix_routeur_htg * routeurs) FILTER (WHERE active),0)::int AS revenu_mensuel,
-      COUNT(*) FILTER (WHERE active AND prix_routeur_htg > 0 AND routeurs > 0
+      COALESCE(SUM(prix_base_htg + prix_routeur_htg * routeurs)
+               FILTER (WHERE active),0)::int AS revenu_mensuel,
+      COUNT(*) FILTER (WHERE active AND prix_base_htg + prix_routeur_htg * routeurs > 0
                          AND (jours IS NULL OR jours < -grace_days))::int AS en_retard,
-      COUNT(*) FILTER (WHERE active AND prix_routeur_htg > 0 AND routeurs > 0
+      COUNT(*) FILTER (WHERE active AND prix_base_htg + prix_routeur_htg * routeurs > 0
                          AND jours IS NOT NULL AND jours >= -grace_days AND jours <= 7)::int AS bientot
     FROM t`);
   const { rows: enc } = await pool.query(`
@@ -742,12 +786,13 @@ export async function tableauPlateforme() {
 // Classees par urgence — la premiere ligne est le premier appel a passer.
 export async function aRelancer() {
   const { rows } = await pool.query(`
-    SELECT t.id, t.name, t.prix_routeur_htg, t.grace_days, t.paid_until,
+    SELECT t.id, t.name, t.prix_base_htg, t.prix_routeur_htg, t.grace_days, t.paid_until,
            (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
            (t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date) AS jours
       FROM tenants t
-     WHERE t.active AND t.prix_routeur_htg > 0
-       AND (SELECT count(*) FROM routers r WHERE r.tenant_id = t.id) > 0
+     WHERE t.active
+       AND t.prix_base_htg
+           + t.prix_routeur_htg * (SELECT count(*) FROM routers r WHERE r.tenant_id = t.id) > 0
        AND (t.paid_until IS NULL
             OR t.paid_until - (now() AT TIME ZONE 'America/Port-au-Prince')::date <= 7)
      ORDER BY t.paid_until NULLS FIRST`);
@@ -756,7 +801,8 @@ export async function aRelancer() {
 
 export async function etatAbonnement(tenantId) {
   const { rows } = await pool.query(
-    `SELECT t.id, t.name, t.prix_routeur_htg, t.paid_until, t.grace_days, t.active,
+    `SELECT t.id, t.name, t.prix_base_htg, t.prix_routeur_htg,
+            t.paid_until, t.grace_days, t.active,
             (SELECT count(*)::int FROM routers r WHERE r.tenant_id = t.id) AS routeurs,
             (t.paid_until IS NULL)::boolean AS jamais_paye,
             CASE WHEN t.paid_until IS NULL THEN NULL
@@ -765,9 +811,9 @@ export async function etatAbonnement(tenantId) {
        FROM tenants t WHERE t.id = $1`, [tenantId]);
   const t = rows[0];
   if (!t) return null;
-  const duMensuel = t.prix_routeur_htg * t.routeurs;
-  // Prix a zero : rien n'est du, donc rien ne peut etre en retard.
-  const facture = t.prix_routeur_htg > 0 && t.routeurs > 0;
+  const duMensuel = t.prix_base_htg + t.prix_routeur_htg * t.routeurs;
+  // Rien a payer : rien ne peut etre en retard.
+  const facture = duMensuel > 0;
   const jours = t.jours_restants;
   const enRetard = facture && (jours === null || jours < -t.grace_days);
   const bientot = facture && !enRetard && jours !== null && jours <= 7;
@@ -859,11 +905,11 @@ export async function confirmerPaiementAbonnement(reference, transactionId) {
   }
 }
 
-export async function setTenantTarif(id, { prixRouteur, graceDays }) {
+export async function setTenantTarif(id, { prixBase, prixRouteur, graceDays }) {
   await pool.query(
-    `UPDATE tenants SET prix_routeur_htg = $2,
-            grace_days = COALESCE($3, grace_days) WHERE id = $1`,
-    [id, Math.max(0, Number(prixRouteur) || 0),
+    `UPDATE tenants SET prix_base_htg = $2, prix_routeur_htg = $3,
+            grace_days = COALESCE($4, grace_days) WHERE id = $1`,
+    [id, Math.max(0, Number(prixBase) || 0), Math.max(0, Number(prixRouteur) || 0),
      graceDays === undefined ? null : Math.max(0, Number(graceDays) || 0)]);
 }
 

@@ -21,6 +21,7 @@ import {
   etatAbonnement, enregistrerPaiement, listPaiements, setTenantTarif,
   tableauPlateforme, aRelancer,
   creerPaiementAbonnement, getPaiementAbonnement, confirmerPaiementAbonnement,
+  lireReglages, ecrireReglages,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
@@ -172,7 +173,8 @@ function encaissementPill(t) {
 // Etat d'abonnement en un coup d'oeil. « Exempte » n'est pas un defaut : c'est
 // l'organisation de l'exploitant, ou une periode offerte.
 function abonnementPill(t) {
-  if (!t.prix_routeur_htg || !t.routeurs) return `<span class="pill ok">exempte</span>`;
+  const du = (t.prix_base_htg || 0) + (t.prix_routeur_htg || 0) * (t.routeurs || 0);
+  if (du === 0) return `<span class="pill ok">exempte</span>`;
   const j = t.jours_restants;
   if (j === null || j === undefined) return `<span class="pill off">jamais réglé</span>`;
   if (j < 0) return `<span class="pill off">échu depuis ${-j} j</span>`;
@@ -223,8 +225,8 @@ adminRouter.post("/admin/premier-demarrage", requireAdmin, async (req, res) => {
 
 // ---------------------------------------------------------- plateforme ----
 adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, res) => {
-  const [orgs, invits, vue, relances] = await Promise.all([
-    listTenants(), listInvitations(), tableauPlateforme(), aRelancer(),
+  const [orgs, invits, vue, relances, defaut] = await Promise.all([
+    listTenants(), listInvitations(), tableauPlateforme(), aRelancer(), lireReglages(),
   ]);
   const base = publicBase(req);
   const date = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "–");
@@ -238,8 +240,8 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
       <td>${encaissementPill(t)}</td>
       <td>${t.active ? "actif" : `<span class="pill off">suspendu</span>`}</td>
       <td>${abonnementPill(t)}</td>
-      <td class="num">${t.prix_routeur_htg > 0
-            ? `${t.prix_routeur_htg * t.routeurs} HTG`
+      <td class="num">${(t.prix_base_htg + t.prix_routeur_htg * t.routeurs) > 0
+            ? `${t.prix_base_htg + t.prix_routeur_htg * t.routeurs} HTG`
             : `<span style="color:var(--ink-soft)">exempte</span>`}</td>
       <td style="font-size:12px;color:var(--ink-soft)">${date(t.created_at)}</td>
       <td style="text-align:right">
@@ -276,7 +278,7 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
     </tr>`).join("");
 
   const lignesRelance = relances.map((r) => {
-    const du = r.prix_routeur_htg * r.routeurs;
+    const du = r.prix_base_htg + r.prix_routeur_htg * r.routeurs;
     const j = r.jours;
     const etat = j === null
       ? `<span class="pill off">jamais réglé</span>`
@@ -341,6 +343,26 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
     </div>
 
     <div class="card">
+      <h2 style="margin-top:0">Tarif par défaut</h2>
+      <p class="sub" style="margin:0 0 12px">Appliqué aux organisations qui
+      s'inscrivent par invitation. Sans lui, chaque nouvelle arrivée serait
+      exemptée jusqu'à ce qu'on y pense — et on n'y pense pas. Le tarif d'une
+      organisation reste modifiable ensuite sur sa fiche.</p>
+      <form class="inline" method="post" action="/admin/plateforme/tarif-defaut">
+        <label>Forfait par organisation
+          <input type="number" name="base" min="0" value="${defaut.prixBase}" size="7" required></label>
+        <label>Par routeur
+          <input type="number" name="routeur" min="0" value="${defaut.prixRouteur}" size="7" required></label>
+        <label>Jours de grâce
+          <input type="number" name="grace" min="0" max="60" value="${defaut.graceJours}" size="4" required></label>
+        <button type="submit">Enregistrer</button>
+      </form>
+      <p class="sub" style="margin:12px 0 0">Un opérateur paie le forfait
+      <strong>plus</strong> le prix de chacun de ses routeurs. Mettez le
+      forfait à zéro pour ne facturer qu'au routeur, ou l'inverse.</p>
+    </div>
+
+    <div class="card">
       <h2 style="margin-top:0">Invitations</h2>
       <p class="sub" style="margin:0 0 12px">L'inscription se fait sur
       invitation : une inscription ouverte laisserait n'importe qui créer des
@@ -390,8 +412,9 @@ adminRouter.get("/admin/plateforme/:id", requireAdmin, requirePlatform, async (r
     <div class="kpis">
       <div class="kpi"><div class="kpi-label">Routeurs</div>
         <div class="kpi-value">${ab.routeurs}</div></div>
-      <div class="kpi"><div class="kpi-label">Prix par routeur</div>
-        <div class="kpi-value">${ab.prix_routeur_htg}<span class="kpi-unit">HTG/mois</span></div></div>
+      <div class="kpi"><div class="kpi-label">Tarif</div>
+        <div class="kpi-value" style="font-size:16px">${ab.prix_base_htg} + ${ab.prix_routeur_htg}<span class="kpi-unit">/routeur</span></div>
+        <div class="kpi-detail">forfait + par routeur</div></div>
       <div class="kpi"><div class="kpi-label">Dû par mois</div>
         <div class="kpi-value">${ab.duMensuel}<span class="kpi-unit">HTG</span></div></div>
       <div class="kpi"><div class="kpi-label">Payé jusqu'au</div>
@@ -423,12 +446,13 @@ adminRouter.get("/admin/plateforme/:id", requireAdmin, requirePlatform, async (r
     <div class="card">
       <h2 style="margin-top:0">Tarif</h2>
       <form class="inline" method="post" action="/admin/plateforme/${id}/tarif">
-        <label>Prix par routeur <input type="number" name="prix" min="0" value="${ab.prix_routeur_htg}" size="7" required></label>
+        <label>Forfait <input type="number" name="base" min="0" value="${ab.prix_base_htg}" size="7" required></label>
+        <label>Par routeur <input type="number" name="prix" min="0" value="${ab.prix_routeur_htg}" size="7" required></label>
         <label>Jours de grâce <input type="number" name="grace" min="0" max="60" value="${ab.grace_days}" size="4" required></label>
         <button type="submit">Enregistrer</button>
       </form>
-      <p class="sub" style="margin:12px 0 0">Prix à zéro : l'organisation n'est
-      jamais en retard. Passé l'échéance et la grâce, son tableau de bord se
+      <p class="sub" style="margin:12px 0 0">Forfait et prix par routeur tous
+      deux à zéro : l'organisation n'est jamais en retard. Passé l'échéance et la grâce, son tableau de bord se
       ferme et la vente en ligne s'arrête ; les codes déjà vendus continuent de
       fonctionner.</p>
     </div>
@@ -462,10 +486,20 @@ adminRouter.post("/admin/plateforme/:id/paiement", requireAdmin, requirePlatform
 adminRouter.post("/admin/plateforme/:id/tarif", requireAdmin, requirePlatform, async (req, res) => {
   const id = Number(req.params.id);
   await setTenantTarif(id, {
+    prixBase: (req.body || {}).base,
     prixRouteur: (req.body || {}).prix,
     graceDays: (req.body || {}).grace,
   });
   res.redirect(`/admin/plateforme/${id}?msg=` + encodeURIComponent("Tarif enregistré."));
+});
+
+adminRouter.post("/admin/plateforme/tarif-defaut", requireAdmin, requirePlatform, async (req, res) => {
+  const b = req.body || {};
+  await ecrireReglages({
+    prixBase: b.base, prixRouteur: b.routeur, graceJours: b.grace,
+  });
+  res.redirect("/admin/plateforme?msg=" + encodeURIComponent(
+    "Tarif par défaut enregistré. Il s'appliquera aux prochaines inscriptions."));
 });
 
 adminRouter.post("/admin/plateforme/invitations", requireAdmin, requirePlatform, async (req, res) => {
@@ -508,7 +542,7 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
       <div class="card" style="border-color:${ab.bientot ? "var(--warn)" : "var(--line)"}">
         <h2 style="margin-top:0${ab.bientot ? ";color:var(--warn)" : ""}">Abonnement</h2>
         <p class="sub" style="margin:0">
-          ${ab.routeurs} routeur(s) &#215; ${ab.prix_routeur_htg} HTG =
+          ${ab.prix_base_htg > 0 ? `${ab.prix_base_htg} HTG de forfait` : ""}${ab.prix_base_htg > 0 && ab.prix_routeur_htg > 0 ? " + " : ""}${ab.prix_routeur_htg > 0 ? `${ab.routeurs} routeur(s) &#215; ${ab.prix_routeur_htg} HTG` : ""} =
           <strong>${ab.duMensuel} HTG par mois</strong>.
           ${ab.paid_until
             ? `Réglé jusqu'au <strong>${new Date(ab.paid_until).toLocaleDateString("fr-FR")}</strong>` +

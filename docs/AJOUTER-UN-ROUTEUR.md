@@ -397,10 +397,16 @@ rouvrir.
 
 ## Abonnement
 
-Le service se facture **par routeur et par mois**. Le prix se règle par
-organisation dans **Plateforme → Abonnement** : un opérateur avec trois
-routeurs paie trois fois. Prix à zéro : l'organisation est exemptée — c'est le
-cas de la vôtre, et de toute période offerte.
+Le tarif a deux parties : un **forfait par organisation** et un **prix par
+routeur**, tous deux mensuels. Un opérateur paie le forfait plus le prix de
+chacun de ses routeurs. Mettez le forfait à zéro pour ne facturer qu'au
+routeur, ou l'inverse ; les deux à zéro, l'organisation est exemptée — c'est
+le cas de la vôtre.
+
+**Tarif par défaut** (Plateforme) : appliqué aux organisations qui s'inscrivent
+par invitation. Sans lui, chaque nouvelle arrivée serait exemptée jusqu'à ce
+qu'on y pense — et on n'y pense pas. Le tarif d'une organisation reste
+modifiable ensuite sur sa fiche, sans toucher au défaut.
 
 L'opérateur règle lui-même depuis **Mon compte**, par MonCash, NatCash ou
 Kashpaw : il choisit le nombre de mois, paie dans l'onglet qui s'ouvre, et son

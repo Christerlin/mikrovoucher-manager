@@ -433,3 +433,34 @@ traîner, couper le jour même ferait perdre des clients honnêtes.
 L'opérateur voit son échéance dans **Mon compte**, avec un rappel dès qu'il
 reste moins d'une semaine. Une coupure surprise se paie en appels et en
 confiance perdue.
+
+
+## Accès sans code (walled-garden)
+
+Un client qui n'a pas encore entré son code ne peut joindre que ce qu'on
+autorise explicitement. Sans cela, sa page de paiement reste blanche — et il
+appelle le vendeur.
+
+Deux niveaux :
+
+- **Entrées du service** (page Plateforme) : les moyens de paiement, les mêmes
+  pour tous. C'est à l'exploitant de les chercher une fois — sans quoi chaque
+  opérateur devrait retrouver seul l'adresse de Kashpaw le jour où elle change.
+  Elles sont posées au premier démarrage.
+- **Entrées d'un routeur** (page « Accès sans code » du routeur) : ce qui n'est
+  propre qu'à ce site.
+
+**Nom d'hôte et adresse IP.** Mettez les deux quand vous les connaissez, et le
+script en pose deux règles. Le nom d'hôte suppose que le téléphone interroge le
+DNS du routeur ; beaucoup utilisent un DNS chiffré qui le contourne, et seule
+l'adresse les sauve alors. Pour trouver l'adresse : tentez le paiement depuis
+un téléphone non connecté, puis sur le routeur `/ip dns cache print`.
+
+À noter : la liste IP (`/ip hotspot walled-garden ip`) est celle qui compte.
+`/ip hotspot walled-garden` travaille sur l'en-tête Host, donc en HTTP
+seulement — inutile pour une page de paiement, qui est en HTTPS.
+
+**Appliquer.** Une modification ne part pas toute seule : cliquez « Appliquer
+au routeur ». L'agent va chercher sa nouvelle version et reconstruit la liste
+en entier — jamais en ajout, sinon une entrée retirée ici survivrait là-bas.
+La page signale quand la liste du routeur n'est plus celle du manager.

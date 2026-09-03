@@ -13,7 +13,7 @@ import { agentRsc } from "./admin/pages.js";
 import {
   getRouterByToken, touchRouter, nextCommand, ackCommand,
   updateRouterInfo, replaceSessions, markVouchersUsed,
-  getPortalFileContent,
+  getPortalFileContent, gardenDuRouteur,
 } from "./db.js";
 
 export const agentRouter = Router();
@@ -84,7 +84,9 @@ agentRouter.get("/agent/self.rsc", async (req, res) => {
     if (!router) return;
     const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
     const base = config.publicUrl || `${proto}://${req.headers.host}`;
-    res.type("text/plain").send(agentRsc(router, base));
+    // Le script sert aussi le walled-garden du routeur : c'est lui qui
+    // ouvre les moyens de paiement aux clients pas encore connectes.
+    res.type("text/plain").send(agentRsc(router, base, await gardenDuRouteur(router.id)));
   } catch (err) {
     console.error("[agent/self]", err.message);
     res.status(502).type("text/plain").send("");

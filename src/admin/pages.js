@@ -22,6 +22,7 @@ import {
   tableauPlateforme, aRelancer,
   creerPaiementAbonnement, getPaiementAbonnement, confirmerPaiementAbonnement,
   lireReglages, ecrireReglages, appliquerTarifDefaut,
+  gardenDuRouteur, listGardenService, ajouterGarden, supprimerGarden,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
@@ -159,6 +160,11 @@ adminRouter.post("/admin/login", handleLogin);
 adminRouter.post("/admin/logout", handleLogout);
 adminRouter.get("/admin", requireAdmin, (req, res) => res.redirect("/admin/routers"));
 
+// Empreinte attendue pour CE routeur : gabarit + son walled-garden.
+async function empreinteRouteur(routerId) {
+  return empreintePour(await gardenDuRouteur(routerId));
+}
+
 // Etat de l'encaissement. Regarder le seul champ en base disait « sans Pay'm »
 // a l'installation d'origine, dont les identifiants vivent dans
 // l'environnement — alors qu'elle encaisse tres bien.
@@ -232,8 +238,9 @@ adminRouter.post("/admin/premier-demarrage", requireAdmin, async (req, res) => {
 
 // ---------------------------------------------------------- plateforme ----
 adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, res) => {
-  const [orgs, invits, vue, relances, defaut] = await Promise.all([
-    listTenants(), listInvitations(), tableauPlateforme(), aRelancer(), lireReglages(),
+  const [orgs, invits, vue, relances, defaut, garden] = await Promise.all([
+    listTenants(), listInvitations(), tableauPlateforme(), aRelancer(),
+    lireReglages(), listGardenService(),
   ]);
   const base = publicBase(req);
   const date = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "–");
@@ -382,6 +389,39 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
     </div>
 
     <div class="card">
+      <h2 style="margin-top:0">Accès sans code — entrées du service</h2>
+      <p class="sub" style="margin:0 0 12px">Ce que tous les routeurs laissent
+      joindre avant qu'un client ait entré son code : les pages de paiement.
+      C'est ici qu'on les tient à jour, une fois pour tout le monde — sans
+      quoi chaque opérateur devrait aller chercher lui-même l'adresse de
+      Kashpaw le jour où elle change.</p>
+      <table>
+        <tr><th>Nom d'hôte</th><th>Adresse IP</th><th>Note</th><th></th></tr>
+        ${garden.map((e) => `
+          <tr>
+            <td class="mono">${e.host ? esc(e.host) : `<span style="color:var(--ink-soft)">–</span>`}</td>
+            <td class="mono">${e.address ? esc(e.address) : `<span style="color:var(--ink-soft)">–</span>`}</td>
+            <td>${esc(e.note || "")}</td>
+            <td style="text-align:right">
+              <form method="post" style="margin:0" action="/admin/plateforme/garden/${e.id}/delete"
+                    data-confirm="Retirer cette entrée pour TOUS les routeurs ?">
+                <button class="danger" type="submit">Retirer</button>
+              </form>
+            </td>
+          </tr>`).join("") || `<tr><td colspan="4" style="color:var(--ink-soft)">Aucune entrée.</td></tr>`}
+      </table>
+      <form class="inline" method="post" action="/admin/plateforme/garden" style="margin-top:12px">
+        <label>Nom d'hôte <input name="host" size="24" placeholder="exemple.com"></label>
+        <label>ou Adresse IP <input name="address" size="16"></label>
+        <label>Note <input name="note" size="16" placeholder="MonCash…"></label>
+        <button type="submit">Ajouter</button>
+      </form>
+      <p class="sub" style="margin:12px 0 0">Une modification ne part pas
+      toute seule : chaque opérateur doit cliquer « Appliquer au routeur » sur
+      sa page. La page le lui signale quand sa liste a changé.</p>
+    </div>
+
+    <div class="card">
       <h2 style="margin-top:0">Invitations</h2>
       <p class="sub" style="margin:0 0 12px">L'inscription se fait sur
       invitation : une inscription ouverte laisserait n'importe qui créer des
@@ -519,6 +559,19 @@ adminRouter.post("/admin/plateforme/tarif-defaut", requireAdmin, requirePlatform
   });
   res.redirect("/admin/plateforme?msg=" + encodeURIComponent(
     "Tarif par défaut enregistré. Il s'appliquera aux prochaines inscriptions."));
+});
+
+adminRouter.post("/admin/plateforme/garden", requireAdmin, requirePlatform, async (req, res) => {
+  const { host, address, note } = req.body || {};
+  const e = await ajouterGarden({ routerId: null, host, address, note });
+  res.redirect("/admin/plateforme?msg=" + encodeURIComponent(e
+    ? "Entrée ajoutée pour tous les routeurs. Chaque opérateur doit l'appliquer."
+    : "Entrée invalide : un nom d'hôte (exemple.com) ou une adresse IP."));
+});
+
+adminRouter.post("/admin/plateforme/garden/:eid/delete", requireAdmin, requirePlatform, async (req, res) => {
+  await supprimerGarden(Number(req.params.eid), { routerId: null });
+  res.redirect("/admin/plateforme?msg=" + encodeURIComponent("Entrée retirée du service."));
 });
 
 adminRouter.post("/admin/plateforme/tarif-defaut/appliquer", requireAdmin, requirePlatform, async (req, res) => {
@@ -942,8 +995,7 @@ function formatRate(raw) {
 }
 
 // Etat de l'agent installe face a celui que sert le manager.
-function agentPill(router) {
-  const attendu = empreinteAgent();
+function agentPill(router, attendu) {
   const pose = router.info && router.info.agentVersion;
   if (!pose) {
     return `<span class="pill wait" title="Le routeur n'a pas encore annoncé sa version">Version inconnue</span>`;
@@ -1040,12 +1092,39 @@ export function empreinteAgent() {
   return _empreinte;
 }
 
-export function agentRsc(router, base) {
-  const host = base.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-  return corpsAgent(router, base, host, empreinteAgent());
+// L'empreinte couvre AUSSI le walled-garden du routeur : sans cela, changer
+// la liste laisserait la pastille afficher « à jour » alors que le script
+// installé n'est plus celui que sert le manager.
+export function empreintePour(entrees) {
+  const cle = (entrees || [])
+    .map((e) => `${e.host}|${e.address}`).sort().join(";");
+  return empreinteAgent() + "." +
+    createHash("sha256").update(cle).digest("hex").slice(0, 4);
 }
 
-function corpsAgent(router, base, host, version = "") {
+export function agentRsc(router, base, entrees = []) {
+  const host = base.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  return corpsAgent(router, base, host, empreintePour(entrees), entrees);
+}
+
+// Rend les entrees du walled-garden en commandes RouterOS. Le commentaire
+// porte le prefixe mv: pour que le nettoyage ne touche que les notres.
+function lignesGarden(entrees) {
+  const lignes = [];
+  for (const e of entrees || []) {
+    const note = String(e.note || "").replace(/[^A-Za-z0-9 .'()-]/g, "").slice(0, 40);
+    // Nom d'hote ET adresse quand les deux sont connus : le nom suppose que
+    // le telephone interroge le DNS du routeur, ce que beaucoup contournent
+    // avec un DNS chiffre — seule l'adresse les sauve alors. N'en poser
+    // qu'un des deux, c'est n'en sauver que la moitie.
+    if (e.host) lignes.push(`add dst-host=${e.host} comment="mv: ${note}"`);
+    if (e.address) lignes.push(`add dst-address=${e.address} comment="mv: ${note}"`);
+  }
+  return lignes.join("\n") || "# (aucune entrée)";
+}
+
+function corpsAgent(router, base, host, version = "", entrees = []) {
+  const garden = lignesGarden(entrees);
   return `# =====================================================================
 # Mikrovoucher : agent pour "${router.name}" (genere par le dashboard)
 # RouterOS v7. Importer sur le routeur : /import mikrovoucher-agent.rsc
@@ -1250,6 +1329,17 @@ add name=mikrovoucher-sched interval=15s on-event="/system script run mikrovouch
 /ip hotspot walled-garden
 remove [find comment="mikrovoucher manager"]
 add dst-host=${host} comment="mikrovoucher manager"
+
+# Ce qu'un client peut joindre avant d'etre authentifie : le manager et les
+# moyens de paiement. La liste vient du dashboard ; elle est reconstruite en
+# entier a chaque import, jamais completee, sinon une entree retiree la-bas
+# survivrait ici.
+#
+# La liste IP est celle qui compte : /ip hotspot walled-garden travaille sur
+# l'en-tete Host, donc uniquement en HTTP. En HTTPS, seule l'adresse passe.
+/ip hotspot walled-garden ip
+remove [find comment~"^mv:"]
+${garden}
 # Fin d'une mise a jour lancee depuis le dashboard : le declencheur a fait
 # son travail, il ne doit pas reimporter ce fichier toutes les 5 secondes.
 /system scheduler
@@ -1278,6 +1368,7 @@ function menuRouteur(router, actif, user) {
         [`${b}/vouchers`, "Vouchers", "vouchers"],
         [`${b}/sponsors`, "Sponsors", "sponsors"],
         [`${b}/files`, "Fichiers du portail", "files"],
+        [`${b}/garden`, "Accès sans code", "garden"],
         [`${b}/agent`, "Script agent", "agent"],
       ],
     // Les deux sections du dashboard, pour ne pas avoir a remonter en haut.
@@ -1412,7 +1503,7 @@ adminRouter.get("/admin/routers/:id", requireAdmin, async (req, res) => {
 
   res.type("html").send(layout(router.name, `
     <h1>${esc(router.name)} <span id="statePill">${onlinePill(router.last_seen)}</span>
-      ${agentPill(router)}</h1>
+      ${agentPill(router, await empreinteRouteur(router.id))}</h1>
     ${bandeauMsg(req)}
     <p class="sub">Slug : <span class="mono">${esc(router.slug)}</span>
       &middot; Portail : <span class="mono">${esc(router.portal_url || "non défini")}</span></p>
@@ -1595,16 +1686,106 @@ adminRouter.get("/admin/routers/:id/files", requireAdmin, requireOwner, async (r
 });
 
 
+// Page dediee : ce qu'un client peut joindre avant d'etre authentifie.
+adminRouter.get("/admin/routers/:id/garden", requireAdmin, requireOwner, async (req, res) => {
+  const router = await getRouter(Number(req.params.id), req.user.tenant_id);
+  if (!router) return res.redirect("/admin/routers");
+  const entrees = await gardenDuRouteur(router.id);
+  const pose = router.info && router.info.agentVersion;
+  const attendu = empreintePour(entrees);
+
+  const ligne = (e) => `
+    <tr>
+      <td class="mono">${e.host ? esc(e.host) : `<span style="color:var(--ink-soft)">–</span>`}</td>
+      <td class="mono">${e.address ? esc(e.address) : `<span style="color:var(--ink-soft)">–</span>`}</td>
+      <td>${esc(e.note || "")}</td>
+      <td>${e.router_id === null
+            ? `<span class="pill ok">service</span>`
+            : `<span class="pill wait">ce routeur</span>`}</td>
+      <td style="text-align:right">
+        ${e.router_id === null
+          ? `<span style="color:var(--ink-soft);font-size:12px">fournie</span>`
+          : `<form method="post" style="margin:0" action="/admin/routers/${router.id}/garden/${e.id}/delete">
+               <button class="danger" type="submit">Retirer</button>
+             </form>`}
+      </td>
+    </tr>`;
+
+  res.type("html").send(layout(`Accès sans code : ${router.name}`, `
+    <h1>Accès sans code</h1>
+    <p class="sub">${esc(router.name)}</p>
+    ${bandeauMsg(req)}
+
+    <div class="card">
+      <p class="sub" style="margin:0 0 12px">Les adresses qu'un client peut
+      joindre <strong>avant</strong> d'avoir entré un code : les pages de
+      paiement, et rien d'autre. Sans elles, l'écran de paiement reste blanc.
+      Les entrées marquées « service » sont fournies et tenues à jour pour
+      tout le monde ; vous n'avez à en ajouter que si vous avez un moyen de
+      paiement à vous.</p>
+      <table>
+        <tr><th>Nom d'hôte</th><th>Adresse IP</th><th>Note</th><th>Portée</th><th></th></tr>
+        ${entrees.map(ligne).join("")}
+      </table>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Ajouter</h2>
+      <form class="inline" method="post" action="/admin/routers/${router.id}/garden">
+        <label>Nom d'hôte <input name="host" size="24" placeholder="exemple.com"></label>
+        <label>ou Adresse IP <input name="address" size="16" placeholder="203.0.113.4"></label>
+        <label>Note <input name="note" size="16"></label>
+        <button type="submit">Ajouter</button>
+      </form>
+      <p class="sub" style="margin:12px 0 0">Mettez les deux quand vous les
+      connaissez. Le nom d'hôte dépend du téléphone qui interroge bien le DNS
+      du routeur — beaucoup utilisent un DNS chiffré qui le contourne, et
+      seule l'adresse IP les sauve alors. Pour trouver l'adresse : tentez le
+      paiement depuis un téléphone non connecté, puis sur le routeur
+      <span class="mono">/ip dns cache print</span>.</p>
+    </div>
+
+    <div class="card" style="border-color:${pose === attendu ? "var(--line)" : "var(--warn)"}">
+      <h2 style="margin-top:0${pose === attendu ? "" : ";color:var(--warn)"}">Appliquer au routeur</h2>
+      <p class="sub" style="margin:0 0 12px">${pose === attendu
+        ? "Le routeur applique bien cette liste."
+        : "Cette liste n'est pas encore sur le routeur. Appliquez-la : l'agent ira chercher sa nouvelle version et la posera."}</p>
+      <form method="post" action="/admin/routers/${router.id}/agent/update" style="margin:0"
+            data-confirm="Envoyer cette liste au routeur ?">
+        <button type="submit" ${pose === attendu ? 'class="ghost"' : ""}>Appliquer au routeur</button>
+      </form>
+    </div>`, { active: "routers", user: req.user,
+               side: menuRouteur(router, "garden", req.user) }));
+});
+
+adminRouter.post("/admin/routers/:id/garden", requireAdmin, requireOwner, async (req, res) => {
+  const id = Number(req.params.id);
+  const retour = (m) => res.redirect(`/admin/routers/${id}/garden?msg=` + encodeURIComponent(m));
+  const { host, address, note } = req.body || {};
+  const e = await ajouterGarden({ routerId: id, host, address, note });
+  if (!e) return retour("Entrée invalide : un nom d'hôte (exemple.com) ou une adresse IP.");
+  return retour("Ajoutée. Cliquez « Appliquer au routeur » pour l'envoyer.");
+});
+
+adminRouter.post("/admin/routers/:id/garden/:eid/delete", requireAdmin, requireOwner, async (req, res) => {
+  const id = Number(req.params.id);
+  const ok = await supprimerGarden(Number(req.params.eid), { routerId: id });
+  res.redirect(`/admin/routers/${id}/garden?msg=` + encodeURIComponent(
+    ok ? "Retirée. Cliquez « Appliquer au routeur »." : "Introuvable, ou fournie par le service."));
+});
+
 // Page dediee : script a importer sur le routeur.
 adminRouter.get("/admin/routers/:id/agent", requireAdmin, requireOwner, async (req, res) => {
   const router = await getRouter(Number(req.params.id), req.user.tenant_id);
   if (!router) return res.redirect("/admin/routers");
   const base = publicBase(req);
+  const entrees = await gardenDuRouteur(router.id);
+  const attendu = empreintePour(entrees);
 
   res.type("html").send(layout(`Script agent : ${router.name}`, `
-    <h1>Script agent ${agentPill(router)}</h1>
+    <h1>Script agent ${agentPill(router, attendu)}</h1>
     <p class="sub">${esc(router.name)}
-      &middot; version servie par le manager : <span class="mono">${empreinteAgent()}</span>
+      &middot; version servie par le manager : <span class="mono">${attendu}</span>
       &middot; annoncée par le routeur :
       <span class="mono">${router.info && router.info.agentVersion
         ? esc(router.info.agentVersion) : "aucune"}</span></p>
@@ -1628,7 +1809,7 @@ adminRouter.get("/admin/routers/:id/agent", requireAdmin, requireOwner, async (r
         <p class="sub" style="margin:0 0 10px">« Mettre à jour » ne marche que
         si un agent tourne déjà : c'est lui qui va chercher son remplaçant.
         La toute première installation passe forcément par WinBox.</p>
-        <textarea id="agentScript" readonly onclick="this.select()">${esc(agentRsc(router, base))}</textarea>
+        <textarea id="agentScript" readonly onclick="this.select()">${esc(agentRsc(router, base, entrees))}</textarea>
         <script>
           function copyAgent() {
             var ta = document.getElementById('agentScript');
@@ -2158,7 +2339,7 @@ adminRouter.get("/admin/routers/:id/agent.rsc", requireAdmin, requireOwner, asyn
   if (!router) return res.redirect("/admin/routers");
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.setHeader("Content-Disposition", 'attachment; filename="mikrovoucher-agent.rsc"');
-  res.send(agentRsc(router, publicBase(req)));
+  res.send(agentRsc(router, publicBase(req), await gardenDuRouteur(router.id)));
 });
 
 adminRouter.post("/admin/routers/:id/plans", requireAdmin, requireOwner, async (req, res) => {

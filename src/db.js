@@ -173,6 +173,20 @@ export async function initDb() {
     -- envoie l'argent par MonCash ou en especes, on l'enregistre ici.
     -- Reglages du service. Une table cle/valeur : ces reglages sont rares et
     -- sans schema stable, une colonne par reglage vieillirait mal.
+    -- Walled-garden : ce qu'un client peut joindre AVANT d'etre authentifie.
+    -- Deux niveaux : les entrees du service (moyens de paiement, les memes
+    -- pour tout le monde — c'est a l'exploitant de les chercher une fois), et
+    -- celles propres a un routeur.
+    CREATE TABLE IF NOT EXISTS walled_garden (
+      id         SERIAL PRIMARY KEY,
+      router_id  INT REFERENCES routers(id) ON DELETE CASCADE,  -- NULL = service
+      host       TEXT NOT NULL DEFAULT '',
+      address    TEXT NOT NULL DEFAULT '',
+      note       TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS wg_router_idx ON walled_garden (router_id);
+
     CREATE TABLE IF NOT EXISTS reglages (
       cle    TEXT PRIMARY KEY,
       valeur TEXT NOT NULL
@@ -729,6 +743,71 @@ export async function listTenants() {
 // Vue d'ensemble du service, pour celui qui l'exploite. Le revenu recurrent
 // se calcule sur les routeurs presents et les tarifs poses : c'est ce qui
 // rentrera si tout le monde paie, pas ce qui est deja encaisse.
+// -------------------------------------------------- walled-garden ----
+
+// Nom d'hote ou adresse : verifie ici parce que la valeur part telle quelle
+// dans une commande du routeur.
+export function entreeGardenValide({ host, address }) {
+  const h = String(host || "").trim().toLowerCase();
+  const a = String(address || "").trim();
+  const hOk = h === "" || /^[a-z0-9.-]{1,120}$/.test(h);
+  const aOk = a === "" || /^[0-9.]{7,18}(\/[0-9]{1,2})?$/.test(a);
+  if (!hOk || !aOk) return null;
+  if (h === "" && a === "") return null;
+  return { host: h, address: a };
+}
+
+// Ce qui s'applique a un routeur : les entrees du service, plus les siennes.
+export async function gardenDuRouteur(routerId) {
+  const { rows } = await pool.query(
+    `SELECT id, router_id, host, address, note FROM walled_garden
+      WHERE router_id IS NULL OR router_id = $1
+      ORDER BY router_id NULLS FIRST, host, address`, [routerId]);
+  return rows;
+}
+
+export async function listGardenService() {
+  const { rows } = await pool.query(
+    `SELECT * FROM walled_garden WHERE router_id IS NULL ORDER BY host, address`);
+  return rows;
+}
+
+export async function ajouterGarden({ routerId = null, host, address, note }) {
+  const v = entreeGardenValide({ host, address });
+  if (!v) return null;
+  const { rows } = await pool.query(
+    `INSERT INTO walled_garden (router_id, host, address, note)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [routerId, v.host, v.address, String(note || "").slice(0, 80)]);
+  return rows[0];
+}
+
+// La suppression porte la portee : un operateur ne peut pas retirer une
+// entree du service, et l'exploitant ne retire pas par megarde celle d'un
+// routeur en croyant toucher la sienne.
+export async function supprimerGarden(id, { routerId = null } = {}) {
+  const { rowCount } = routerId === null
+    ? await pool.query(`DELETE FROM walled_garden WHERE id = $1 AND router_id IS NULL`, [id])
+    : await pool.query(`DELETE FROM walled_garden WHERE id = $1 AND router_id = $2`, [id, routerId]);
+  return rowCount === 1;
+}
+
+// Entrees connues des moyens de paiement, posees une seule fois au premier
+// demarrage : sans elles, chaque operateur devrait trouver lui-meme l'adresse
+// de Kashpaw — ce qui nous a deja coute une soiree.
+export async function semerGardenService() {
+  const { rows } = await pool.query(`SELECT count(*)::int AS n FROM walled_garden WHERE router_id IS NULL`);
+  if (rows[0].n > 0) return 0;
+  const connues = [
+    { host: "plopplop.solutionip.app", address: "", note: "Pay'm" },
+    { host: "kashpaw.net", address: "", note: "Kashpaw" },
+    { host: "www.kashpaw.net", address: "", note: "Kashpaw" },
+    { host: "", address: "209.16.158.11", note: "Kashpaw (IP)" },
+  ];
+  for (const e of connues) await ajouterGarden({ routerId: null, ...e });
+  return connues.length;
+}
+
 // ------------------------------------------------------- reglages ----
 
 export async function lireReglages() {

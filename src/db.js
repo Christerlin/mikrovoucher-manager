@@ -490,13 +490,20 @@ export async function listReversements(tenantId, limit = 30) {
   return rows;
 }
 
-export async function setTenantPaym(id, { clientId, clientSecret }) {
-  // Un secret vide ne doit pas effacer celui en place : on ne le reaffiche
-  // jamais, l'operateur ne peut donc pas le retaper a chaque fois.
-  await pool.query(
-    `UPDATE tenants SET paym_client_id = $2,
-            paym_client_secret = COALESCE(NULLIF($3, ''), paym_client_secret)
-      WHERE id = $1`, [id, clientId || null, clientSecret || ""]);
+export async function setTenantPaym(id, { clientId }) {
+  // Le client_secret n'est pas demande : l'encaissement Pay'm n'utilise que le
+  // client_id. Il redeviendra utile le jour des versements sortants, qui les
+  // signent — d'ici la, le garder serait conserver un secret pour rien.
+  await pool.query(`UPDATE tenants SET paym_client_id = $2 WHERE id = $1`,
+    [id, clientId || null]);
+}
+
+// Efface les cles secretes deja saisies : elles n'ont jamais servi, et un
+// secret inutilise reste un secret qui peut fuiter.
+export async function purgerSecretsPaym() {
+  const { rowCount } = await pool.query(
+    `UPDATE tenants SET paym_client_secret = NULL WHERE paym_client_secret IS NOT NULL`);
+  return rowCount;
 }
 
 // Les forfaits créés avant l'expiration calendaire ont validity_seconds = 0

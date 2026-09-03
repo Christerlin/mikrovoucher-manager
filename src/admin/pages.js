@@ -834,17 +834,15 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
       ligne reste fermé ; les codes vendus de la main à la main, eux, marchent
       toujours.</p>
       <form class="inline" method="post" action="/admin/compte/paym">
-        <label>Client ID
-          <input name="client_id" value="${esc(t.paym_client_id || "")}" size="30"></label>
-        <label>Clé secrète
-          <input type="password" name="client_secret" size="26"
-                 placeholder="${t.paym_client_secret ? "inchangée" : "facultatif"}"></label>
+        <label>Client ID Pay'm
+          <input name="client_id" value="${esc(t.paym_client_id || "")}" size="34"></label>
         <button type="submit">Enregistrer</button>
       </form>
-      <p class="sub" style="margin:12px 0 0">La clé n'est jamais réaffichée :
-      laissez le champ vide pour la conserver. Ces identifiants sont exclus des
-      sauvegardes, au même titre que les jetons de routeur — une sauvegarde
-      circule, et ceux-là ouvrent votre encaissement.</p>
+      <p class="sub" style="margin:12px 0 0">Le <strong>Client ID seul</strong>
+      suffit : c'est tout ce que Pay'm demande pour encaisser. La clé secrète
+      ne servira que le jour où le service fera des versements sortants — la
+      stocker d'ici là serait garder un secret qui ne sert à rien. Ce Client ID
+      est exclu des sauvegardes, au même titre que les jetons de routeur.</p>
     </div>
 
     <div class="card">
@@ -926,11 +924,8 @@ adminRouter.post("/admin/compte/nom", requireAdmin, requireOwner, async (req, re
 });
 
 adminRouter.post("/admin/compte/paym", requireAdmin, requireOwner, async (req, res) => {
-  const { client_id, client_secret } = req.body || {};
-  await setTenantPaym(req.user.tenant_id, {
-    clientId: String(client_id || "").trim(),
-    clientSecret: String(client_secret || "").trim(),
-  });
+  const { client_id } = req.body || {};
+  await setTenantPaym(req.user.tenant_id, { clientId: String(client_id || "").trim() });
   return res.redirect("/admin/compte?msg=" + encodeURIComponent(
     String(client_id || "").trim()
       ? "Identifiants enregistrés. Le paiement en ligne est actif pour vos routeurs."

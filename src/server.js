@@ -2,7 +2,8 @@ import express from "express";
 import cors from "cors";
 import { config } from "./config.js";
 import { initDb, backfillTenants, backfillPaymEnv, backfillPlatformAdmin,
-         backfillPlanValidity, semerGardenService, vouchersDejaEchus,
+         backfillPlanValidity, semerGardenService, purgerSecretsPaym,
+         vouchersDejaEchus,
          routersSilencieux } from "./db.js";
 import { portalRouter, reconcile } from "./portal.js";
 import { agentRouter } from "./agent.js";
@@ -92,6 +93,8 @@ async function main() {
   if (encaisse) console.log(`[paym] « ${encaisse} » conserve les identifiants de l'environnement`);
   const promu = await backfillPlatformAdmin();
   if (promu) console.log(`[plateforme] ${promu} devient administrateur du service`);
+  const purges = await purgerSecretsPaym();
+  if (purges) console.log(`[paym] ${purges} clé(s) secrète(s) effacée(s) : inutilisées par l'encaissement`);
   const semees = await semerGardenService();
   if (semees) console.log(`[walled-garden] ${semees} entrée(s) de paiement posées`);
   const majores = await backfillPlanValidity();

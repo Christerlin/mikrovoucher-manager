@@ -55,6 +55,45 @@ function verifyThrottled(reference) {
   return false;
 }
 
+// Page de retour de Pay'm. L'URL de retour se regle une seule fois dans le
+// compte Pay'm, pour tout le monde : si elle pointait vers le portail d'un
+// operateur, les clients d'un autre atterriraient sur un hote qui n'existe
+// pas chez eux. Elle pointe donc ici — le gestionnaire est deja joignable
+// depuis tous les reseaux, l'agent l'ajoute lui-meme aux accès sans code.
+//
+// Aucune décision ne se prend ici : c'est l'onglet resté ouvert qui interroge
+// le résultat et délivre le code. Cette page ne fait que le dire.
+portalRouter.get("/retour", (req, res) => {
+  const ok = String(req.query.statut || "").toLowerCase() === "ok";
+  res.type("html").send(`<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${ok ? "Paiement reçu" : "Paiement interrompu"}</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:#eef1f5;color:#101720;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;padding:24px}
+  .c{background:#fff;border:1px solid #dde3ec;border-radius:20px;padding:30px 28px;
+    max-width:380px;text-align:center;box-shadow:0 20px 40px -16px rgba(16,23,32,.18)}
+  h1{font-family:Georgia,serif;font-size:22px;margin:0 0 8px}
+  p{font-size:14px;line-height:1.5;color:#5c6b7a;margin:0 0 10px}
+  .pastille{display:inline-block;padding:5px 14px;border-radius:999px;font-size:12px;
+    font-weight:700;margin-bottom:14px}
+  .ok{background:rgba(13,148,136,.14);color:#0d9488}
+  .ko{background:rgba(217,119,6,.16);color:#d97706}
+  strong{color:#101720}
+</style></head><body><div class="c">
+  <div class="pastille ${ok ? "ok" : "ko"}">${ok ? "Paiement reçu" : "Paiement non terminé"}</div>
+  <h1>${ok ? "C'est bon." : "Rien n'a été prélevé."}</h1>
+  ${ok
+    ? `<p><strong>Revenez à l'onglet précédent</strong> — celui où vous avez
+       choisi votre forfait. Votre code y apparaît tout seul, et la connexion
+       se fait automatiquement.</p>
+       <p>Ne fermez pas cet onglet-ci avant d'avoir vu votre code.</p>`
+    : `<p>Le paiement n'est pas allé au bout. <strong>Revenez à l'onglet
+       précédent</strong> pour réessayer.</p>`}
+</div></body></html>`);
+});
+
 // 0) Plans d'un routeur (le portail peut s'afficher dynamiquement).
 portalRouter.get("/api/portal/:slug/plans", rateLimit(60), async (req, res) => {
   try {

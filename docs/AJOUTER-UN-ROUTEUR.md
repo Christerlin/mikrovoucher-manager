@@ -481,3 +481,22 @@ seulement — inutile pour une page de paiement, qui est en HTTPS.
 au routeur ». L'agent va chercher sa nouvelle version et reconstruit la liste
 en entier — jamais en ajout, sinon une entrée retirée ici survivrait là-bas.
 La page signale quand la liste du routeur n'est plus celle du manager.
+
+
+## URL de retour de Pay'm
+
+Elle se règle **une seule fois dans le compte Pay'm**, et vaut pour tout ce que
+ce compte encaisse. Pointez-la sur :
+
+```
+https://mikrovoucher-manager.onrender.com/retour
+```
+
+Pas sur le portail d'un opérateur : si le compte encaisse aussi pour un autre,
+ses clients atterriraient sur un hôte qui n'existe pas chez eux. Le
+gestionnaire, lui, est joignable depuis tous les réseaux — l'agent l'ajoute
+lui-même aux accès sans code.
+
+Cette page ne décide de rien. C'est l'onglet resté ouvert qui interroge le
+résultat et délivre le code ; elle se contente de dire au client d'y revenir.
+Le paiement aboutit donc même si Pay'm ne renvoie nulle part.

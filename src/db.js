@@ -796,16 +796,31 @@ export async function supprimerGarden(id, { routerId = null } = {}) {
 // demarrage : sans elles, chaque operateur devrait trouver lui-meme l'adresse
 // de Kashpaw — ce qui nous a deja coute une soiree.
 export async function semerGardenService() {
-  const { rows } = await pool.query(`SELECT count(*)::int AS n FROM walled_garden WHERE router_id IS NULL`);
-  if (rows[0].n > 0) return 0;
+  // Pas de jokers : la liste IP resout les noms par DNS, elle ne sait pas
+  // quoi faire d'un *.exemple.com. Il faut donc les noms exacts.
   const connues = [
     { host: "plopplop.solutionip.app", address: "", note: "Pay'm" },
+    { host: "paymplopplop.com", address: "199.16.129.199", note: "Pay'm (retour)" },
+    { host: "www.paymplopplop.com", address: "", note: "Pay'm (retour)" },
+    { host: "moncashbutton.digicelgroup.com", address: "200.113.192.253", note: "MonCash" },
+    // NatCash est derriere Cloudflare : ses adresses tournent dans un grand
+    // pool, les figer ne tiendrait pas. Le nom d'hote fait le travail ici.
+    { host: "natcash.ht", address: "", note: "NatCash" },
+    { host: "www.natcash.ht", address: "", note: "NatCash" },
     { host: "kashpaw.net", address: "", note: "Kashpaw" },
-    { host: "www.kashpaw.net", address: "", note: "Kashpaw" },
-    { host: "", address: "209.16.158.11", note: "Kashpaw (IP)" },
+    { host: "www.kashpaw.net", address: "209.16.158.11", note: "Kashpaw" },
   ];
-  for (const e of connues) await ajouterGarden({ routerId: null, ...e });
-  return connues.length;
+  let n = 0;
+  for (const e of connues) {
+    // Idempotent entree par entree, et non « seulement si la table est vide » :
+    // sinon une installation existante ne recevrait jamais les moyens de
+    // paiement ajoutes plus tard.
+    const { rowCount } = await pool.query(
+      `SELECT 1 FROM walled_garden
+        WHERE router_id IS NULL AND host = $1 AND address = $2`, [e.host, e.address]);
+    if (rowCount === 0) { await ajouterGarden({ routerId: null, ...e }); n += 1; }
+  }
+  return n;
 }
 
 // ------------------------------------------------------- reglages ----

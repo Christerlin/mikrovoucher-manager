@@ -1339,6 +1339,7 @@ add dst-host=${host} comment="mikrovoucher manager"
 # l'en-tete Host, donc uniquement en HTTP. En HTTPS, seule l'adresse passe.
 /ip hotspot walled-garden ip
 remove [find comment~"^mv:"]
+add dst-host=${host} comment="mv: manager"
 ${garden}
 # Fin d'une mise a jour lancee depuis le dashboard : le declencheur a fait
 # son travail, il ne doit pas reimporter ce fichier toutes les 5 secondes.

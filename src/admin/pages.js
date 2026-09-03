@@ -23,6 +23,8 @@ import {
   creerPaiementAbonnement, getPaiementAbonnement, confirmerPaiementAbonnement,
   lireReglages, ecrireReglages, appliquerTarifDefaut,
   gardenDuRouteur, listGardenService, ajouterGarden, supprimerGarden,
+  setTenantEncaissement, compteReversement, enregistrerReversement,
+  listReversements,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
@@ -169,6 +171,9 @@ async function empreinteRouteur(routerId) {
 // a l'installation d'origine, dont les identifiants vivent dans
 // l'environnement — alors qu'elle encaisse tres bien.
 function encaissementPill(t) {
+  if (t.encaisse_par_service) {
+    return `<span class="pill wait" title="Ses ventes tombent sur notre compte et lui sont dues">encaissé par le service</span>`;
+  }
   if (t.paym_client_id) return `<span class="pill ok">Pay'm posé</span>`;
   if (t.paym_from_env && config.paym.clientId) {
     return `<span class="pill ok" title="Identifiants pris dans les variables d'environnement">Pay'm (environnement)</span>`;
@@ -449,8 +454,11 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
 
 adminRouter.get("/admin/plateforme/:id", requireAdmin, requirePlatform, async (req, res) => {
   const id = Number(req.params.id);
-  const [ab, paiements] = await Promise.all([etatAbonnement(id), listPaiements(id)]);
-  if (!ab) return res.redirect("/admin/plateforme");
+  const [ab, paiements, t, compte, reversements] = await Promise.all([
+    etatAbonnement(id), listPaiements(id), getTenant(id),
+    compteReversement(id), listReversements(id),
+  ]);
+  if (!ab || !t) return res.redirect("/admin/plateforme");
   const date = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "–");
 
   const lignes = paiements.map((p) => `
@@ -525,6 +533,66 @@ adminRouter.get("/admin/plateforme/:id", requireAdmin, requirePlatform, async (r
       </table>
     </div>
 
+    <div class="card" style="border-color:${t.encaisse_par_service ? "var(--warn)" : "var(--line)"}">
+      <h2 style="margin-top:0${t.encaisse_par_service ? ";color:var(--warn)" : ""}">Encaissement des ventes</h2>
+      <p class="sub" style="margin:0 0 12px">${t.encaisse_par_service
+        ? `<strong>Le service encaisse pour cette organisation.</strong> Ses
+           ventes tombent sur notre compte Pay'm et lui sont dues. Tenir cet
+           argent pour quelqu'un d'autre n'est pas neutre : à faire le temps
+           qu'il obtienne son propre compte, pas comme arrangement durable.`
+        : `Cette organisation encaisse sur son propre compte Pay'm. L'argent ne
+           nous traverse jamais, et rien ne lui est dû.`}</p>
+      <form method="post" action="/admin/plateforme/${id}/encaissement" style="margin:0"
+            data-confirm="${t.encaisse_par_service
+              ? "Les ventes suivantes seront marquées comme encaissées par l'opérateur. L'historique déjà enregistré ne bouge pas."
+              : "Les ventes suivantes seront marquées comme encaissées par le service, et vous les devrez à cette organisation."}">
+        <input type="hidden" name="par_service" value="${t.encaisse_par_service ? "0" : "1"}">
+        <button class="${t.encaisse_par_service ? "ghost" : "danger"}" type="submit">
+          ${t.encaisse_par_service ? "L'opérateur encaisse lui-même" : "Le service encaisse pour lui"}</button>
+      </form>
+    </div>
+
+    ${compte.encaisse > 0 || compte.reverse > 0 ? `
+    <div class="card">
+      <h2 style="margin-top:0">Reversements</h2>
+      <div class="kpis" style="margin-bottom:14px">
+        <div class="kpi"><div class="kpi-label">Encaissé pour lui</div>
+          <div class="kpi-value">${compte.encaisse}<span class="kpi-unit">HTG</span></div>
+          <div class="kpi-detail">${compte.ventes} vente(s)</div></div>
+        <div class="kpi"><div class="kpi-label">Déjà reversé</div>
+          <div class="kpi-value">${compte.reverse}<span class="kpi-unit">HTG</span></div></div>
+        <div class="kpi" ${compte.reste > 0 ? 'style="border-color:var(--warn)"' : ""}>
+          <div class="kpi-label">Reste à lui rendre</div>
+          <div class="kpi-value">${compte.reste}<span class="kpi-unit">HTG</span></div></div>
+      </div>
+      <form class="inline" method="post" action="/admin/plateforme/${id}/reversement">
+        <label>Montant HTG <input type="number" name="montant" min="1" value="${Math.max(0, compte.reste)}" size="7" required></label>
+        <label>Moyen
+          <select name="methode">
+            <option value="moncash">MonCash</option>
+            <option value="natcash">NatCash</option>
+            <option value="especes">Espèces</option>
+            <option value="autre">Autre</option>
+          </select></label>
+        <label>Note <input name="note" size="20" placeholder="Référence du transfert…"></label>
+        <button type="submit">Enregistrer le reversement</button>
+      </form>
+      ${reversements.length ? `
+      <table style="margin-top:14px">
+        <tr><th>Date</th><th class="num">Montant</th><th>Moyen</th><th>Note</th></tr>
+        ${reversements.map((r) => `
+          <tr>
+            <td style="font-size:12px">${new Date(r.created_at).toLocaleDateString("fr-FR")}</td>
+            <td class="num">${r.montant_htg} HTG</td>
+            <td>${esc(r.methode)}</td>
+            <td style="font-size:12px;color:var(--ink-soft)">${esc(r.note || "")}</td>
+          </tr>`).join("")}
+      </table>` : ""}
+      <p class="sub" style="margin:12px 0 0">« Encaissé pour lui » ne compte que
+      les ventes marquées comme encaissées par le service — celles qu'il a
+      encaissées lui-même ne nous ont jamais traversés.</p>
+    </div>` : ""}
+
     <a class="btn ghost" href="/admin/plateforme">Retour</a>`,
     { active: "plateforme", user: req.user, side: menuGeneral("g-plateforme", req.user) }));
 });
@@ -540,6 +608,27 @@ adminRouter.post("/admin/plateforme/:id/paiement", requireAdmin, requirePlatform
   });
   if (!fin) return retour("Organisation introuvable.");
   return retour(`Paiement enregistré. Couvert jusqu'au ${new Date(fin).toLocaleDateString("fr-FR")}.`);
+});
+
+adminRouter.post("/admin/plateforme/:id/encaissement", requireAdmin, requirePlatform, async (req, res) => {
+  const id = Number(req.params.id);
+  const par = (req.body || {}).par_service === "1";
+  await setTenantEncaissement(id, par);
+  res.redirect(`/admin/plateforme/${id}?msg=` + encodeURIComponent(par
+    ? "Les ventes à venir seront encaissées par le service et lui seront dues."
+    : "Les ventes à venir seront encaissées par l'opérateur."));
+});
+
+adminRouter.post("/admin/plateforme/:id/reversement", requireAdmin, requirePlatform, async (req, res) => {
+  const id = Number(req.params.id);
+  const b = req.body || {};
+  const montant = Math.max(0, Number(b.montant) || 0);
+  if (montant === 0) {
+    return res.redirect(`/admin/plateforme/${id}?msg=` + encodeURIComponent("Montant vide."));
+  }
+  await enregistrerReversement({ tenantId: id, montantHtg: montant, methode: b.methode, note: b.note });
+  res.redirect(`/admin/plateforme/${id}?msg=` + encodeURIComponent(
+    `Reversement de ${montant} HTG enregistré.`));
 });
 
 adminRouter.post("/admin/plateforme/:id/tarif", requireAdmin, requirePlatform, async (req, res) => {
@@ -609,6 +698,7 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
   const t = await getTenant(req.user.tenant_id);
   if (!t) return res.redirect("/admin/routers");
   const ab = await etatAbonnement(req.user.tenant_id);
+  const compteRev = t.encaisse_par_service ? await compteReversement(req.user.tenant_id) : null;
   const pose = Boolean(t.paym_client_id);
   // Meme nuance ici : « non configuré » alors que les ventes passent ferait
   // chercher une panne qui n'existe pas.
@@ -618,6 +708,20 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
     <h1>Mon compte</h1>
     <p class="sub">Réglages de votre organisation.</p>
     ${bandeauMsg(req)}
+    ${compteRev && (compteRev.encaisse > 0 || compteRev.reverse > 0) ? `
+      <div class="card" ${compteRev.reste > 0 ? 'style="border-color:var(--warn)"' : ""}>
+        <h2 style="margin-top:0">Ventes encaissées par le service</h2>
+        <p class="sub" style="margin:0 0 10px">Vos ventes en ligne passent par
+        le compte du service, qui vous les reverse. Ce tableau est le même que
+        le nôtre.</p>
+        <table>
+          <tr><td>Encaissé pour vous (${compteRev.ventes} vente(s))</td>
+              <td class="num"><strong>${compteRev.encaisse} HTG</strong></td></tr>
+          <tr><td>Déjà reversé</td><td class="num">${compteRev.reverse} HTG</td></tr>
+          <tr><td><strong>Reste à vous rendre</strong></td>
+              <td class="num"><strong>${compteRev.reste} HTG</strong></td></tr>
+        </table>
+      </div>` : ""}
     ${ab && !ab.facture ? `
       <div class="card">
         <h2 style="margin-top:0">Abonnement <span class="pill ok">offert</span></h2>

@@ -359,6 +359,23 @@ transmetteur de fonds, avec les obligations que cela entraîne.
 Sans identifiants, le portail fonctionne toujours : seul le paiement en ligne
 reste fermé, la vente de codes en espèces continue.
 
+**Encaisser pour quelqu'un d'autre.** On peut prêter les identifiants du
+service à un opérateur qui n'a pas encore de compte Pay'm : ses ventes
+tombent alors chez nous et lui sont dues. Il faut le déclarer explicitement
+sur sa fiche (« Le service encaisse pour lui ») — le déduire de la présence
+d'identifiants serait faux, un opérateur qui pose ses propres clés se
+ressemble en base.
+
+À partir de là, chaque vente retient qui l'a encaissée, et la fiche tient le
+compte : encaissé pour lui, déjà reversé, reste à rendre. L'opérateur voit le
+même tableau dans Mon compte — c'est ce qui évite la discussion le jour du
+règlement. Le marqueur est figé à la commande : le jour où il pose ses propres
+clés, l'historique reste lisible.
+
+Ce registre ne rend pas la pratique plus légale : tenir l'argent d'un tiers
+reste tenir l'argent d'un tiers. Il la rend traçable. À faire le temps qu'il
+obtienne son compte, pas comme arrangement durable.
+
 La clé secrète n'est jamais réaffichée — laisser le champ vide la conserve — et
 ni elle ni le client_id ne figurent dans les sauvegardes, au même titre que les
 jetons de routeur : une sauvegarde circule, et ceux-là ouvrent l'encaissement.

@@ -154,6 +154,11 @@ export async function initDb() {
       -- pas encore pose ses identifiants encaisserait sur NOTRE compte, en
       -- silence. C'est la pire panne possible de ce systeme.
       paym_from_env      BOOLEAN NOT NULL DEFAULT false,
+      -- Le service encaisse POUR cette organisation : ses ventes tombent sur
+      -- notre compte Pay'm, et nous les lui reversons. Un drapeau explicite,
+      -- et non deduit de la presence d'identifiants : preter ses cles a un
+      -- client se ressemble en base a un client qui a les siennes.
+      encaisse_par_service BOOLEAN NOT NULL DEFAULT false,
       -- Abonnement : un prix par routeur actif et par mois. Zero = exempte
       -- (l'organisation de l'exploitant, ou une periode offerte).
       -- Tarif en deux parties : un forfait par organisation, plus un prix par
@@ -297,6 +302,23 @@ export async function initDb() {
     -- Apres la creation de la table, sinon un demarrage sur base neuve
     -- echoue : la colonne serait ajoutee a une table qui n'existe pas encore.
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS recharge_code TEXT;
+    -- Qui a encaisse cette vente : 'operateur' (son propre compte Pay'm) ou
+    -- 'service' (le notre, a lui reverser). Fige a la commande : le jour ou
+    -- l'operateur pose ses propres cles, l'historique doit rester lisible.
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS encaisse_par TEXT NOT NULL DEFAULT 'operateur';
+
+    -- Reversements : ce qu'on a rendu a un operateur dont on encaisse les
+    -- ventes. Sans ce registre, la dette ne vit que dans la tete de celui qui
+    -- doit — et se discute le jour ou elle se regle.
+    CREATE TABLE IF NOT EXISTS reversements (
+      id          SERIAL PRIMARY KEY,
+      tenant_id   INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      montant_htg INT NOT NULL,
+      methode     TEXT NOT NULL DEFAULT 'moncash',
+      note        TEXT NOT NULL DEFAULT '',
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS reversements_tenant_idx ON reversements (tenant_id);
     -- Rattrapage des colonnes ajoutees apres coup. CREATE TABLE IF NOT EXISTS
     -- laisse intacte une table deja creee par une version precedente : sans
     -- ces ALTER, la colonne n'apparaitrait jamais sur une base en service.
@@ -306,6 +328,7 @@ export async function initDb() {
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paym_client_id TEXT;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paym_client_secret TEXT;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paym_from_env BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE tenants ADD COLUMN IF NOT EXISTS encaisse_par_service BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS prix_base_htg INT NOT NULL DEFAULT 0;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS prix_routeur_htg INT NOT NULL DEFAULT 0;
     ALTER TABLE tenants ADD COLUMN IF NOT EXISTS paid_until DATE;
@@ -406,7 +429,8 @@ export async function getTenant(id) {
 // telle quelle, sans rien saisir.
 export async function paymDuRouteur(routerId) {
   const { rows } = await pool.query(
-    `SELECT t.payout_mode, t.paym_client_id, t.paym_client_secret, t.paym_from_env
+    `SELECT t.payout_mode, t.paym_client_id, t.paym_client_secret, t.paym_from_env,
+            t.encaisse_par_service
        FROM routers r JOIN tenants t ON t.id = r.tenant_id
       WHERE r.id = $1`, [routerId]);
   const t = rows[0];
@@ -421,6 +445,49 @@ export async function paymDuRouteur(routerId) {
 
 export async function setTenantNom(id, nom) {
   await pool.query(`UPDATE tenants SET name = $2 WHERE id = $1`, [id, nom]);
+}
+
+export async function setTenantEncaissement(id, parService) {
+  await pool.query(`UPDATE tenants SET encaisse_par_service = $2 WHERE id = $1`,
+    [id, Boolean(parService)]);
+}
+
+// ------------------------------------------------- reversements ----
+
+// Ce qui a ete encaisse POUR un operateur, ce qu'on lui a rendu, et le reste.
+// Seules les ventes marquees 'service' comptent : celles qu'il a encaissees
+// lui-meme ne nous ont jamais traverses.
+export async function compteReversement(tenantId) {
+  const { rows } = await pool.query(`
+    SELECT
+      (SELECT COALESCE(SUM(o.amount_htg),0)::int
+         FROM orders o JOIN routers r ON r.id = o.router_id
+        WHERE r.tenant_id = $1 AND o.encaisse_par = 'service'
+          AND o.status IN ('PAID','DELIVERED')) AS encaisse,
+      (SELECT COUNT(*)::int
+         FROM orders o JOIN routers r ON r.id = o.router_id
+        WHERE r.tenant_id = $1 AND o.encaisse_par = 'service'
+          AND o.status IN ('PAID','DELIVERED')) AS ventes,
+      (SELECT COALESCE(SUM(montant_htg),0)::int
+         FROM reversements WHERE tenant_id = $1) AS reverse`, [tenantId]);
+  const r = rows[0];
+  return { ...r, reste: r.encaisse - r.reverse };
+}
+
+export async function enregistrerReversement({ tenantId, montantHtg, methode, note }) {
+  const { rows } = await pool.query(
+    `INSERT INTO reversements (tenant_id, montant_htg, methode, note)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [tenantId, Math.max(0, Number(montantHtg) || 0), methode || "moncash",
+     String(note || "").slice(0, 120)]);
+  return rows[0];
+}
+
+export async function listReversements(tenantId, limit = 30) {
+  const { rows } = await pool.query(
+    `SELECT * FROM reversements WHERE tenant_id = $1
+      ORDER BY created_at DESC LIMIT $2`, [tenantId, limit]);
+  return rows;
 }
 
 export async function setTenantPaym(id, { clientId, clientSecret }) {
@@ -657,11 +724,16 @@ export async function creerOrganisation({ nom, slug, email, motDePasse, platform
     // Une organisation qui arrive par invitation herite du tarif du service :
     // sinon elle serait exemptee jusqu'a ce qu'on y pense, et on n'y pense pas.
     const tarif = token !== null ? await lireReglages() : null;
+    // La toute premiere organisation herite des identifiants Pay'm de
+    // l'environnement : sans cela, une installation neuve aurait le paiement
+    // en ligne ferme jusqu'au redemarrage suivant, sans rien pour l'expliquer.
     const { rows: t } = await client.query(
-      `INSERT INTO tenants (name, slug, prix_base_htg, prix_routeur_htg, grace_days)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      `INSERT INTO tenants (name, slug, prix_base_htg, prix_routeur_htg,
+                            grace_days, paym_from_env)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
       [nom, slug, tarif ? tarif.prixBase : 0, tarif ? tarif.prixRouteur : 0,
-       tarif ? tarif.graceJours : 7]);
+       tarif ? tarif.graceJours : 7,
+       platformAdmin && Boolean(config.paym.clientId)]);
     if (token !== null) {
       await client.query(`UPDATE invitations SET tenant_id = $2 WHERE token = $1`,
         [token, t[0].id]);
@@ -1751,13 +1823,14 @@ export async function resyncVouchers(routerId) {
 }
 
 // ----------------------------------------------------------------- orders --
-export async function createOrder({ reference, routerId, planId, amountHtg, method, claimHash, retrievalPin, transactionId, rechargeCode = null }) {
+export async function createOrder({ reference, routerId, planId, amountHtg, method, claimHash, retrievalPin, transactionId, rechargeCode = null, encaissePar = "operateur" }) {
   await pool.query(
     `INSERT INTO orders (reference, router_id, plan_id, amount_htg, method,
-                         claim_hash, retrieval_pin, paym_transaction_id, recharge_code)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+                         claim_hash, retrieval_pin, paym_transaction_id,
+                         recharge_code, encaisse_par)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [reference, routerId, planId, amountHtg, method, claimHash, retrievalPin,
-     transactionId, rechargeCode]);
+     transactionId, rechargeCode, encaissePar]);
 }
 export async function getOrder(reference) {
   const { rows } = await pool.query(`SELECT * FROM orders WHERE reference = $1`, [reference]);

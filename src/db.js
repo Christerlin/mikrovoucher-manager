@@ -61,6 +61,7 @@ export async function initDb() {
     -- a nouveau. Regle depuis le dashboard, applique au routeur par l'agent.
     ALTER TABLE routers ADD COLUMN IF NOT EXISTS trial_limit TEXT NOT NULL DEFAULT '5m';
     ALTER TABLE routers ADD COLUMN IF NOT EXISTS trial_reset TEXT NOT NULL DEFAULT '1d';
+    ALTER TABLE routers ADD COLUMN IF NOT EXISTS trial_enabled BOOLEAN NOT NULL DEFAULT true;
 
     -- Sessions hotspot actives, remplacées à chaque rapport de l'agent.
     CREATE TABLE IF NOT EXISTS sessions (
@@ -662,6 +663,11 @@ export async function setTrial(routerId, limite, reset) {
   await pool.query(
     `UPDATE routers SET trial_limit = $2, trial_reset = $3 WHERE id = $1`,
     [routerId, limite, reset]);
+}
+
+export async function setTrialActif(routerId, actif) {
+  await pool.query(`UPDATE routers SET trial_enabled = $2 WHERE id = $1`,
+    [routerId, Boolean(actif)]);
 }
 
 export async function setPortalDir(routerId, dir) {

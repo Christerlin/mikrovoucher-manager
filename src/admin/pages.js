@@ -14,7 +14,7 @@ import {
   cheminPortailValide, upsertPortalFile, listPortalFiles,
   deletePortalFile, setPortalDir,
   listSponsors, createSponsor, setSponsorImage, toggleSponsor, deleteSponsor,
-  dureeRouterOsValide, setTrial, remiseAZero, restaurer,
+  dureeRouterOsValide, setTrial, setTrialActif, remiseAZero, restaurer,
   getTenant, setTenantPaym, setTenantNom, listTenants, setTenantActif,
   creerOrganisation, slugLibre, creerInvitation, listInvitations,
   invitationValide, supprimerInvitation,
@@ -1334,6 +1334,15 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
               comment="Mikrovoucher : import du nouvel agent, s'efface seul";
           } on-error={}
         }
+        # Coupure de l'essai gratuit. On retire 'trial' de login-by : sans
+        # lui, RouterOS ne propose plus l'essai et le portail cesse d'afficher
+        # le bouton, puisque sa variable $(trial) passe a 'no'.
+        :if ($action = "notrial") do={
+          :do {
+            /ip hotspot profile set [find name!="default"] \\
+              login-by=cookie,http-chap,http-pap,mac-cookie;
+          } on-error={}
+        }
         # Reglage de l'essai gratuit depuis le dashboard. $code porte la
         # duree offerte, $up le delai de remise a zero, $prof le profil des
         # utilisateurs d'essai. Sans erreur si l'essai n'est pas encore
@@ -1341,6 +1350,7 @@ add name=mikrovoucher-agent dont-require-permissions=no source={
         :if ($action = "trial") do={
           :do {
             /ip hotspot profile set [find name!="default"] \\
+              login-by=cookie,http-chap,http-pap,mac-cookie,trial \\
               trial-uptime-limit=$code trial-uptime-reset=$up \\
               trial-user-profile=$prof;
           } on-error={}
@@ -2036,11 +2046,23 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, requireOwner, async (r
     </div>
 
     <div class="card">
-      <h2 style="margin-top:0">Essai gratuit</h2>
+      <h2 style="margin-top:0">Essai gratuit
+        ${router.trial_enabled === false
+          ? `<span class="pill off">coupé</span>`
+          : `<span class="pill ok">actif</span>`}</h2>
       <p class="sub" style="margin:0 0 12px">Ce que reçoit un appareil qui n'a
       jamais payé. C'est de la publicité, pas un contrôle d'accès : un
       téléphone qui change d'adresse Wi-Fi privée repart à zéro. Court, il
       montre que le réseau marche sans valoir la peine d'être contourné.</p>
+
+      <form method="post" action="/admin/routers/${router.id}/trial/actif"
+            style="margin:0 0 14px"
+            data-confirm="${router.trial_enabled === false ? "" : "Couper l'essai gratuit ? Le bouton disparaîtra du portail."}">
+        <input type="hidden" name="actif" value="${router.trial_enabled === false ? "1" : "0"}">
+        <button class="${router.trial_enabled === false ? "" : "ghost"}" type="submit">
+          ${router.trial_enabled === false ? "Remettre l'essai gratuit" : "Couper l'essai gratuit"}</button>
+      </form>
+
       <form class="inline" method="post" action="/admin/routers/${router.id}/trial">
         <label>Durée offerte
           <input name="limite" value="${esc(router.trial_limit || "5m")}"
@@ -2053,7 +2075,12 @@ adminRouter.get("/admin/routers/:id/plans", requireAdmin, requireOwner, async (r
       <p class="sub" style="margin:12px 0 0">Format RouterOS :
       <span class="mono">30m</span>, <span class="mono">2h</span>,
       <span class="mono">1d</span>. « À nouveau après » compte depuis le début
-      de l'essai. La page de connexion annonce la durée toute seule.</p>
+      de l'essai. La page de connexion annonce la durée toute seule.
+      ${router.trial_enabled === false
+        ? `<br><strong>L'essai est coupé</strong> : ces durées ne s'appliqueront
+           qu'une fois remis. Le bouton a disparu du portail tout seul —
+           RouterOS ne propose plus l'essai, donc la page cesse de l'afficher.`
+        : ""}</p>
     </div>`, { active: "routers", user: req.user, side: menuRouteur(router, "plans", req.user) }));
 });
 
@@ -2267,6 +2294,25 @@ adminRouter.post("/admin/routers/:id/agent/update", requireAdmin, requireOwner, 
     "Mise à jour envoyée. Le routeur télécharge le script et l'importe dans la minute."));
 });
 
+adminRouter.post("/admin/routers/:id/trial/actif", requireAdmin, requireOwner, async (req, res) => {
+  const id = Number(req.params.id);
+  const router = await getRouter(id, req.user.tenant_id);
+  if (!router) return res.redirect("/admin/routers");
+  const actif = (req.body || {}).actif === "1";
+  await setTrialActif(id, actif);
+  if (actif) {
+    await queueCommand(id, "trial", {
+      code: router.trial_limit || "5m", uptime: router.trial_reset || "1d",
+      profile: "essai",
+    });
+  } else {
+    await queueCommand(id, "notrial", {});
+  }
+  res.redirect(`/admin/routers/${id}/plans?msg=` + encodeURIComponent(actif
+    ? "Essai gratuit remis. Le bouton revient sur le portail."
+    : "Essai gratuit coupé. Le bouton disparaît du portail."));
+});
+
 adminRouter.post("/admin/routers/:id/trial", requireAdmin, requireOwner, async (req, res) => {
   const id = Number(req.params.id);
   const router = await getRouter(id, req.user.tenant_id);
@@ -2278,7 +2324,10 @@ adminRouter.post("/admin/routers/:id/trial", requireAdmin, requireOwner, async (
   if (!limite || !reset) return retour("Durée invalide. Exemples : 30m, 2h, 1d.");
 
   await setTrial(id, limite, reset);
+  await setTrialActif(id, true);
   // $code = duree offerte, $up = remise a zero, $profile = profil d'essai.
+  // La commande remet aussi 'trial' dans login-by : regler une duree sur un
+  // essai coupe donnerait un reglage sans effet, et personne ne le verrait.
   await queueCommand(id, "trial", { code: limite, uptime: reset, profile: "essai" });
   return retour(`Essai réglé sur ${limite} par ${reset}. Envoyé au routeur.`);
 });

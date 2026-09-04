@@ -22,14 +22,27 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
 // CORS uniquement pour l'API du portail (le dashboard est same-origin).
-// Sans CORS_ORIGINS on autorise tout (démarrage facile) avec un avertissement ;
+// CORS ouvert sur /api, volontairement.
 // en production, listez vos portails : http://lambda.connect,http://tm.connect
-if (config.corsOrigins.length === 0) {
-  console.warn("[cors] CORS_ORIGINS non défini : /api/* accepte toutes les origines. " +
-    "Restreignez-le en production.");
+// Restreindre par origine ne protégerait rien ici et casse le service :
+//
+//   - /api ne porte aucun cookie. L'authentification passe par un jeton dans
+//     un en-tête, ou par un identifiant dans l'URL. Sans autorité ambiante,
+//     il n'y a pas de CSRF à empêcher, et qui veut appeler l'API le fait avec
+//     curl sans jamais rencontrer CORS.
+//   - Chaque opérateur sert son portail depuis sa propre origine
+//     (http://easytech.connect, http://lambda.connect…). Une liste fixe
+//     obligerait à l'y ajouter à chaque nouveau client — et jusque-là son
+//     portail afficherait zéro forfait, sans rien dire de la raison.
+//
+// Ce qui protège réellement ces routes, c'est la limitation de débit et le
+// jeton de réclamation, tous deux en place.
+if (config.corsOrigins.length > 0) {
+  console.warn("[cors] CORS_ORIGINS est défini mais ignoré : une liste fixe " +
+    "d'origines empêcherait les portails des autres opérateurs de fonctionner.");
 }
 const corsMw = cors({
-  origin: config.corsOrigins.length > 0 ? config.corsOrigins : true,
+  origin: true,             // sans credentials : les cookies ne partent pas
   methods: ["GET", "POST"],
   allowedHeaders: ["Content-Type", "x-claim-token"],
 });

@@ -42,7 +42,9 @@ export const adminRouter = Router();
 // sont des pages et des images de portail captif.
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024, files: 20 },
+  // Un portail complet fait une trentaine de fichiers avec ses sous-dossiers :
+  // la limite doit laisser passer le dossier entier d'un coup.
+  limits: { fileSize: 2 * 1024 * 1024, files: 60 },
 });
 
 // Express 4 ne rattrape pas le rejet d'un handler async : une erreur SQL
@@ -1743,12 +1745,49 @@ adminRouter.get("/admin/routers/:id/files", requireAdmin, requireOwner, async (r
       dans le dossier du portail.</p>
 
       <form method="post" action="/admin/routers/${router.id}/files"
+            enctype="multipart/form-data" class="inline" style="margin-bottom:8px"
+            id="formDossier">
+        <label>Dossier entier
+          <input type="file" id="dossier" webkitdirectory directory multiple></label>
+        <button type="submit">Déposer le dossier</button>
+      </form>
+      <p class="sub" style="margin:0 0 16px">Choisissez le dossier
+      <span class="mono">hotspot</span> : les sous-dossiers sont conservés,
+      rien à déposer un par un. Ce que WinBox fait d'un glisser-déposer, mais
+      depuis n'importe où — utile quand le routeur est chez le client, derrière
+      un réseau qui n'accepte aucune connexion entrante.</p>
+
+      <form method="post" action="/admin/routers/${router.id}/files"
             enctype="multipart/form-data" class="inline" style="margin-bottom:14px">
-        <label>Fichiers <input type="file" name="fichiers" multiple required></label>
+        <label>Ou quelques fichiers <input type="file" name="fichiers" multiple required></label>
         <label>Sous-dossier
           <input name="prefixe" placeholder="(racine), ex : css" size="10"></label>
         <button type="submit">Déposer</button>
       </form>
+
+      <script>
+        (function () {
+          var f = document.getElementById("formDossier");
+          var champ = document.getElementById("dossier");
+          if (!f || !champ) return;
+          f.addEventListener("submit", function (e) {
+            e.preventDefault();
+            if (!champ.files.length) return;
+            // Le multipart ne transporte que le nom du fichier, jamais son
+            // chemin : on envoie les chemins à côté, dans le même ordre.
+            var fd = new FormData();
+            for (var i = 0; i < champ.files.length; i++) {
+              fd.append("fichiers", champ.files[i]);
+              fd.append("chemins", champ.files[i].webkitRelativePath || champ.files[i].name);
+            }
+            var b = f.querySelector("button");
+            b.disabled = true; b.textContent = "Envoi…";
+            fetch(f.action, { method: "POST", body: fd, redirect: "follow" })
+              .then(function (r) { window.location = r.url; })
+              .catch(function () { b.disabled = false; b.textContent = "Déposer le dossier"; });
+          });
+        })();
+      </script>
 
       <table>
         <tr><th>Chemin</th><th>Taille</th><th>État</th><th></th></tr>
@@ -2396,7 +2435,7 @@ adminRouter.post("/admin/routers/:id/sponsors/:sid/delete", requireAdmin, requir
 
 // --------------------------------------------- fichiers du portail ----
 adminRouter.post("/admin/routers/:id/files", requireAdmin, requireOwner,
-  upload.array("fichiers", 20), async (req, res) => {
+  upload.array("fichiers", 60), async (req, res) => {
     const id = Number(req.params.id);
     const router = await getRouter(id, req.user.tenant_id);
     if (!router) return res.redirect("/admin/routers");
@@ -2419,13 +2458,38 @@ adminRouter.post("/admin/routers/:id/files", requireAdmin, requireOwner,
       return retour("Aucun fichier reçu. Choisissez au moins un fichier.");
     }
 
+    // Dépôt d'un dossier : les chemins voyagent à part, dans le même ordre que
+    // les fichiers — le multipart, lui, ne transporte que les noms.
+    const brutChemins = req.body.chemins;
+    const chemins = brutChemins === undefined ? null
+      : (Array.isArray(brutChemins) ? brutChemins : [brutChemins]);
+    // Tous les chemins partagent le nom du dossier choisi : on le retire, la
+    // destination sur le routeur étant déjà connue.
+    let racine = "";
+    if (chemins && chemins.length === recus.length) {
+      const tetes = new Set(chemins.map((c) => String(c).split("/")[0]));
+      if (tetes.size === 1 && chemins.some((c) => String(c).includes("/"))) {
+        racine = [...tetes][0] + "/";
+      }
+    }
+
     const pris = [], refuses = [];
-    for (const f of recus) {
-      // Certains navigateurs envoient un chemin complet : on ne garde que le
-      // nom, sinon un "/Users/…/login.html" serait refuse sans raison lisible.
-      const nom = String(f.originalname || "").split(/[\\/]/).pop();
-      const chemin = cheminPortailValide(dossier + nom);
-      if (!chemin) { refuses.push(nom); continue; }
+    for (let i = 0; i < recus.length; i++) {
+      const f = recus[i];
+      let brut;
+      if (chemins && chemins.length === recus.length) {
+        brut = String(chemins[i]).slice(racine.length);
+      } else {
+        // Certains navigateurs envoient un chemin complet : on ne garde que le
+        // nom, sinon un "/Users/…/login.html" serait refuse sans raison lisible.
+        brut = dossier + String(f.originalname || "").split(/[\\/]/).pop();
+      }
+      // Rebuts du système et scripts routeur : ils n'ont rien à faire sur le
+      // portail, et les signaler comme « refusés » ferait croire à une erreur.
+      const nom = brut.split("/").pop();
+      if (nom.startsWith(".") || /\.(rsc|md)$/i.test(nom)) continue;
+      const chemin = cheminPortailValide(brut);
+      if (!chemin) { refuses.push(brut); continue; }
       await upsertPortalFile(id, chemin, f.buffer);
       pris.push(chemin);
     }
@@ -2433,8 +2497,10 @@ adminRouter.post("/admin/routers/:id/files", requireAdmin, requireOwner,
     if (pris.length === 0) {
       return retour(`Aucun fichier accepté (nom refusé) : ${refuses.join(", ")}`);
     }
+    // Au-delà de quelques fichiers, la liste complète noie le message.
+    const detail = pris.length <= 6 ? ` : ${pris.join(", ")}` : "";
     return retour(
-      `${pris.length} fichier(s) déposé(s) : ${pris.join(", ")}` +
+      `${pris.length} fichier(s) déposé(s)${detail}` +
       (refuses.length ? ` — refusé(s) : ${refuses.join(", ")}` : ""));
   });
 

@@ -489,14 +489,21 @@ Elle se règle **une seule fois dans le compte Pay'm**, et vaut pour tout ce que
 ce compte encaisse. Pointez-la sur :
 
 ```
-https://mikrovoucher-manager.onrender.com/retour
+https://mikrovoucher-manager.onrender.com/return
 ```
 
 Pas sur le portail d'un opérateur : si le compte encaisse aussi pour un autre,
-ses clients atterriraient sur un hôte qui n'existe pas chez eux. Le
-gestionnaire, lui, est joignable depuis tous les réseaux — l'agent l'ajoute
-lui-même aux accès sans code.
+ses clients atterriraient sur un hôte qui n'existe pas chez eux.
 
-Cette page ne décide de rien. C'est l'onglet resté ouvert qui interroge le
-résultat et délivre le code ; elle se contente de dire au client d'y revenir.
-Le paiement aboutit donc même si Pay'm ne renvoie nulle part.
+Le gestionnaire, lui, sait à qui appartient chaque paiement : il retrouve la
+commande par sa référence, puis **renvoie le client sur le portail de son
+propre routeur**, avec un jeton qui lui rend son code sans qu'il ait à se
+rappeler quoi que ce soit. C'est l'**URL du portail** du routeur — réglée à sa
+création — qui indique où.
+
+Si la commande est introuvable ou si le routeur n'a pas d'URL de portail, une
+page neutre dit quoi faire plutôt que de rediriger vers un hôte inexistant.
+`/retour` est accepté comme alias de `/return`.
+
+Le paiement aboutit de toute façon : l'onglet resté ouvert interroge le
+résultat de son côté. Le retour est un confort, pas une dépendance.

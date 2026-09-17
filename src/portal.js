@@ -63,7 +63,7 @@ function verifyThrottled(reference) {
 //
 // Aucune décision ne se prend ici : c'est l'onglet resté ouvert qui interroge
 // le résultat et délivre le code. Cette page ne fait que le dire.
-portalRouter.get("/retour", (req, res) => {
+function pageRetourNeutre(req, res) {
   const ok = String(req.query.statut || "").toLowerCase() === "ok";
   res.type("html").send(`<!doctype html>
 <html lang="fr"><head><meta charset="utf-8">
@@ -92,7 +92,7 @@ portalRouter.get("/retour", (req, res) => {
     : `<p>Le paiement n'est pas allé au bout. <strong>Revenez à l'onglet
        précédent</strong> pour réessayer.</p>`}
 </div></body></html>`);
-});
+}
 
 // 0) Plans d'un routeur (le portail peut s'afficher dynamiquement).
 portalRouter.get("/api/portal/:slug/plans", rateLimit(60), async (req, res) => {
@@ -333,7 +333,8 @@ portalRouter.get("/api/handoff/:token", rateLimit(40), async (req, res) => {
 
 // 3) Return URL Pay'm. RÈGLE : toujours rediriger vite, même base morte.
 //    Le portail de destination est celui du routeur de la commande.
-portalRouter.get("/return", rateLimit(30), async (req, res) => {
+// /retour est un alias : l'adresse a pu etre posee ainsi dans un compte Pay'm.
+portalRouter.get(["/return", "/retour"], rateLimit(30), async (req, res) => {
   console.log("[return] query:", JSON.stringify(req.query));
   // Défaut si on ne retrouve pas la commande : page neutre.
   let target = null;

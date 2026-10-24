@@ -525,6 +525,11 @@ La page **Plateforme** affiche, pour chacun : encaissé, déjà reversé, reste 
 rendre, plus un total en tête. Une dette qu'il faut ouvrir dix fiches pour
 connaître ne se règle pas.
 
+Le chiffre en tête est **ce qui est rentré depuis le dernier versement** : il
+repart de zéro à chaque règlement, et c'est lui qui dit quoi payer maintenant.
+Le total depuis le début figure à côté, en gris — il ne redescend jamais, et
+le lire comme une dette fait croire qu'on doit encore ce qu'on a déjà payé.
+
 L'opérateur voit le même tableau dans **Mon compte**, avec le détail de ce
 qu'il a reçu — date, montant, moyen, référence. Un total « déjà reversé » sans
 dire quand ni comment ne se vérifie pas, et c'est justement ce qu'il doit

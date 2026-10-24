@@ -396,21 +396,22 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
       d'autre n'est pas neutre : à faire le temps qu'il obtienne son propre
       compte, pas comme arrangement durable.</p>
       <table>
-        <tr><th>Organisation</th><th class="num">Encaissé</th>
-            <th class="num">Reversé</th><th class="num">Reste à rendre</th>
-            <th>Dernier reversement</th><th></th></tr>
+        <tr><th>Organisation</th><th class="num">Depuis le dernier versement</th>
+            <th class="num">Reste à rendre</th>
+            <th>Dernier versement</th><th class="num">Total depuis le début</th><th></th></tr>
         ${soldes.map((s) => `
           <tr>
             <td><a href="/admin/plateforme/${s.id}"><strong>${esc(s.name)}</strong></a>
               ${s.encaisse_par_service ? "" : `<div style="font-size:12px;color:var(--ink-soft)">encaisse lui-même désormais</div>`}</td>
-            <td class="num">${s.encaisse} HTG
-              <div style="font-size:12px;color:var(--ink-soft)">${s.ventes} vente(s)</div></td>
-            <td class="num">${s.reverse} HTG</td>
+            <td class="num">${s.encaisse_depuis} HTG
+              <div style="font-size:12px;color:var(--ink-soft)">${s.ventes_depuis} vente(s)</div></td>
             <td class="num">${s.reste > 0
                 ? `<strong style="color:var(--warn)">${s.reste} HTG</strong>`
-                : `<span style="color:var(--ink-soft)">0</span>`}</td>
+                : `<span class="pill ok">soldé</span>`}</td>
             <td style="font-size:12px;color:var(--ink-soft)">${s.dernier_reversement
                 ? new Date(s.dernier_reversement).toLocaleDateString("fr-FR") : "jamais"}</td>
+            <td class="num" style="color:var(--ink-soft);font-size:12px">
+              ${s.encaisse} HTG encaissé<br>${s.reverse} HTG reversé</td>
             <td style="text-align:right">
               ${s.reste > 0 ? `
               <form method="post" action="/admin/plateforme/${s.id}/reversement"
@@ -429,9 +430,11 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
             </td>
           </tr>`).join("")}
       </table>
-      <p class="sub" style="margin:12px 0 0">« Soldé » enregistre le montant
-      entier et ramène le solde à zéro. Pour un versement partiel, ouvrez la
-      fiche de l'organisation : le montant y est modifiable.</p>
+      <p class="sub" style="margin:12px 0 0">La première colonne repart de zéro
+      à chaque versement : c'est ce qu'il y a à payer maintenant. Le total
+      depuis le début, lui, ne redescend jamais — il sert d'historique, pas de
+      dette. « Soldé » enregistre le montant entier ; pour un versement
+      partiel, ouvrez la fiche de l'organisation.</p>
     </div>` : ""}
 
     ${lignesRelance ? `
@@ -841,11 +844,15 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
         le compte du service, qui vous les reverse. Ce tableau est le même que
         le nôtre.</p>
         <table>
-          <tr><td>Encaissé pour vous (${compteRev.ventes} vente(s))</td>
-              <td class="num"><strong>${compteRev.encaisse} HTG</strong></td></tr>
-          <tr><td>Déjà reversé</td><td class="num">${compteRev.reverse} HTG</td></tr>
+          <tr><td>Encaissé depuis votre dernier versement (${compteRev.ventes_depuis} vente(s))</td>
+              <td class="num"><strong>${compteRev.encaisse_depuis} HTG</strong></td></tr>
           <tr><td><strong>Reste à vous rendre</strong></td>
-              <td class="num"><strong>${compteRev.reste} HTG</strong></td></tr>
+              <td class="num">${compteRev.reste > 0
+                  ? `<strong>${compteRev.reste} HTG</strong>`
+                  : `<span class="pill ok">soldé</span>`}</td></tr>
+          <tr><td style="color:var(--ink-soft);font-size:12px">Depuis le début :
+              ${compteRev.ventes} vente(s), ${compteRev.encaisse} HTG encaissés,
+              ${compteRev.reverse} HTG reversés</td><td></td></tr>
         </table>
 
         ${mesReversements.length ? `

@@ -476,17 +476,27 @@ export async function setTenantEncaissement(id, parService) {
 // lui-meme ne nous ont jamais traverses.
 export async function compteReversement(tenantId) {
   const { rows } = await pool.query(`
+    WITH dern AS (
+      SELECT MAX(created_at) AS le FROM reversements WHERE tenant_id = $1
+    ), srv AS (
+      SELECT o.amount_htg, o.created_at
+        FROM orders o JOIN routers r ON r.id = o.router_id
+       WHERE r.tenant_id = $1 AND o.encaisse_par = 'service'
+         AND o.status IN ('PAID','DELIVERED')
+    )
     SELECT
-      (SELECT COALESCE(SUM(o.amount_htg),0)::int
-         FROM orders o JOIN routers r ON r.id = o.router_id
-        WHERE r.tenant_id = $1 AND o.encaisse_par = 'service'
-          AND o.status IN ('PAID','DELIVERED')) AS encaisse,
-      (SELECT COUNT(*)::int
-         FROM orders o JOIN routers r ON r.id = o.router_id
-        WHERE r.tenant_id = $1 AND o.encaisse_par = 'service'
-          AND o.status IN ('PAID','DELIVERED')) AS ventes,
+      (SELECT COALESCE(SUM(amount_htg),0)::int FROM srv) AS encaisse,
+      (SELECT COUNT(*)::int FROM srv) AS ventes,
       (SELECT COALESCE(SUM(montant_htg),0)::int
-         FROM reversements WHERE tenant_id = $1) AS reverse`, [tenantId]);
+         FROM reversements WHERE tenant_id = $1) AS reverse,
+      -- Ce qui est rentre DEPUIS le dernier versement : le chiffre qui dit
+      -- quoi payer maintenant. Le cumul depuis le debut ne redescend jamais,
+      -- et se lit a tort comme une dette encore due.
+      (SELECT COALESCE(SUM(s.amount_htg),0)::int FROM srv s, dern d
+        WHERE d.le IS NULL OR s.created_at > d.le) AS encaisse_depuis,
+      (SELECT COUNT(*)::int FROM srv s, dern d
+        WHERE d.le IS NULL OR s.created_at > d.le) AS ventes_depuis,
+      (SELECT le FROM dern) AS depuis`, [tenantId]);
   const r = rows[0];
   return { ...r, reste: r.encaisse - r.reverse };
 }
@@ -542,6 +552,8 @@ export async function soldesReversement() {
            COALESCE(v.ventes, 0)::int   AS ventes,
            COALESCE(rv.reverse, 0)::int AS reverse,
            (COALESCE(v.encaisse, 0) - COALESCE(rv.reverse, 0))::int AS reste,
+           COALESCE(d.encaisse_depuis, 0)::int AS encaisse_depuis,
+           COALESCE(d.ventes_depuis, 0)::int   AS ventes_depuis,
            v.derniere_vente, rv.dernier_reversement
       FROM tenants t
       LEFT JOIN (
@@ -556,6 +568,16 @@ export async function soldesReversement() {
                MAX(created_at) AS dernier_reversement
           FROM reversements GROUP BY tenant_id
       ) rv ON rv.tenant_id = t.id
+      -- Rentre depuis le dernier versement : ce qui reste a payer maintenant.
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(o.amount_htg),0) AS encaisse_depuis,
+               COUNT(*) AS ventes_depuis
+          FROM orders o JOIN routers r2 ON r2.id = o.router_id
+         WHERE r2.tenant_id = t.id AND o.encaisse_par = 'service'
+           AND o.status IN ('PAID','DELIVERED')
+           AND (rv.dernier_reversement IS NULL
+                OR o.created_at > rv.dernier_reversement)
+      ) d ON true
      -- On garde aussi ceux dont le solde est nul mais qui ont un historique :
      -- « plus rien a rendre » est une information, pas une absence.
      WHERE t.encaisse_par_service

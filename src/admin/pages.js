@@ -24,8 +24,8 @@ import {
   lireReglages, ecrireReglages, appliquerTarifDefaut,
   gardenDuRouteur, listGardenService, ajouterGarden, supprimerGarden,
   setTenantEncaissement, compteReversement, enregistrerReversement,
-  soldesReversement, ventesAReclasser, reclasserVentes,
   listReversements,
+  soldesReversement, ventesAReclasser, reclasserVentes,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
 } from "../db.js";
@@ -820,6 +820,11 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
   // cela, l'operateur ne verrait rien la ou nous voyons une dette — deux
   // cotes en desaccord sur de l'argent, ce que ce registre doit empecher.
   const compteRev = await compteReversement(req.user.tenant_id);
+  // Le detail, pas seulement le total : « déjà reversé : 1000 » sans dire
+  // quand ni comment ne se verifie pas, et c'est justement ce qu'un operateur
+  // doit pouvoir rapprocher de son telephone.
+  const mesReversements = compteRev.reverse > 0
+    ? await listReversements(req.user.tenant_id) : [];
   const pose = Boolean(t.paym_client_id);
   // Meme nuance ici : « non configuré » alors que les ventes passent ferait
   // chercher une panne qui n'existe pas.
@@ -842,6 +847,22 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
           <tr><td><strong>Reste à vous rendre</strong></td>
               <td class="num"><strong>${compteRev.reste} HTG</strong></td></tr>
         </table>
+
+        ${mesReversements.length ? `
+        <h2 style="font-size:15px;margin:18px 0 8px">Ce que vous avez reçu</h2>
+        <table>
+          <tr><th>Date</th><th class="num">Montant</th><th>Moyen</th><th>Référence</th></tr>
+          ${mesReversements.map((r) => `
+            <tr>
+              <td style="font-size:12px">${new Date(r.created_at).toLocaleDateString("fr-FR", {
+                  day: "numeric", month: "long", year: "numeric" })}</td>
+              <td class="num"><strong>${r.montant_htg} HTG</strong></td>
+              <td>${esc(r.methode)}</td>
+              <td style="font-size:12px;color:var(--ink-soft)">${esc(r.note || "–")}</td>
+            </tr>`).join("")}
+        </table>
+        <p class="sub" style="margin:10px 0 0">Si un versement manque ici,
+        signalez-le : c'est ce tableau qui fait foi des deux côtés.</p>` : ""}
       </div>` : ""}
     ${ab && !ab.facture ? `
       <div class="card">

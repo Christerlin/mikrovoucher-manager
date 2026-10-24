@@ -525,6 +525,11 @@ La page **Plateforme** affiche, pour chacun : encaissé, déjà reversé, reste 
 rendre, plus un total en tête. Une dette qu'il faut ouvrir dix fiches pour
 connaître ne se règle pas.
 
+L'opérateur voit le même tableau dans **Mon compte**, avec le détail de ce
+qu'il a reçu — date, montant, moyen, référence. Un total « déjà reversé » sans
+dire quand ni comment ne se vérifie pas, et c'est justement ce qu'il doit
+pouvoir rapprocher de son téléphone.
+
 Le bouton **Soldé** enregistre le montant entier et ramène le solde à zéro.
 Pour un versement partiel, ouvrez la fiche de l'organisation : le montant y
 est modifiable.

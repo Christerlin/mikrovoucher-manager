@@ -203,9 +203,7 @@ portalRouter.post("/api/checkout", rateLimit(12), async (req, res) => {
     const compte = await paymDuRouteur(router.id);
     const clientId = compte ? compte.paym_client_id : null;
     // Fige a la commande qui a encaisse : le jour ou l'operateur pose ses
-    // propres cles, l'historique doit rester lisible. Seul le drapeau
-    // explicite compte — l'installation d'origine tire aussi ses cles de
-    // l'environnement, mais ses ventes sont les siennes, pas une dette.
+    // propres cles, l'historique doit rester lisible.
     const encaissePar = compte && compte.encaisse_par_service ? "service" : "operateur";
     if (!paymentsEnabled(clientId)) {
       return res.status(503).json({ error: "Paiement en ligne non configuré." });

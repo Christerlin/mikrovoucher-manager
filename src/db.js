@@ -430,17 +430,33 @@ export async function getTenant(id) {
 // telle quelle, sans rien saisir.
 export async function paymDuRouteur(routerId) {
   const { rows } = await pool.query(
-    `SELECT t.payout_mode, t.paym_client_id, t.paym_client_secret, t.paym_from_env,
-            t.encaisse_par_service
+    `SELECT t.id AS tenant_id, t.payout_mode, t.paym_client_id, t.paym_from_env,
+            t.encaisse_par_service,
+            EXISTS(SELECT 1 FROM users u
+                    WHERE u.tenant_id = t.id AND u.platform_admin) AS est_le_notre
        FROM routers r JOIN tenants t ON t.id = r.tenant_id
       WHERE r.id = $1`, [routerId]);
   const t = rows[0];
   if (!t) return null;
+  // Le repli sur l'environnement n'existe que pour l'installation d'origine.
+  const clientId = t.paym_client_id
+    || (t.paym_from_env ? (config.paym.clientId || null) : null);
+
+  // Qui encaisse, deduit plutot que declare : coller la cle du service dans
+  // le compte d'un client ressemble en base a un client qui a la sienne, et
+  // l'exploitant n'a aucune raison de deviner qu'un drapeau supplementaire
+  // existe. Si la cle employee est celle du service, et que l'organisation
+  // n'est pas la notre, l'argent arrive chez nous et lui est du.
+  const cleDuService = Boolean(config.paym.clientId)
+    && clientId === config.paym.clientId
+    && !t.est_le_notre;
+
   return {
     ...t,
-    // Le repli sur l'environnement n'existe que pour l'installation d'origine.
-    paym_client_id: t.paym_client_id
-      || (t.paym_from_env ? (config.paym.clientId || null) : null),
+    paym_client_id: clientId,
+    // Le drapeau explicite reste une surcharge, pour un cas que la deduction
+    // ne couvrirait pas.
+    encaisse_par_service: t.encaisse_par_service || cleDuService,
   };
 }
 
@@ -477,6 +493,48 @@ export async function compteReversement(tenantId) {
 
 // Soldes de tous les clients d'un coup. La page Plateforme en a besoin : une
 // dette qu'il faut ouvrir dix fiches pour connaitre ne se regle pas.
+// Organisations qui utilisent la cle du service, et dont des ventes passees
+// sont encore comptees comme les leurs. Elles le sont parce que le marquage
+// se faisait sur un drapeau que rien n'invitait a poser : l'argent est bien
+// arrive chez nous, mais le registre l'ignore.
+export async function ventesAReclasser() {
+  if (!config.paym.clientId) return [];
+  const { rows } = await pool.query(`
+    SELECT t.id, t.name,
+           COUNT(*)::int AS ventes,
+           COALESCE(SUM(o.amount_htg),0)::int AS montant
+      FROM orders o
+      JOIN routers r ON r.id = o.router_id
+      JOIN tenants t ON t.id = r.tenant_id
+     WHERE o.encaisse_par = 'operateur'
+       AND o.status IN ('PAID','DELIVERED')
+       AND t.paym_client_id = $1
+       AND NOT EXISTS (SELECT 1 FROM users u
+                        WHERE u.tenant_id = t.id AND u.platform_admin)
+     GROUP BY t.id, t.name
+     ORDER BY montant DESC`, [config.paym.clientId]);
+  return rows;
+}
+
+// Reclasse les ventes passees d'une organisation. Borne a celles qui portent
+// bien la cle du service : on ne requalifie pas en dette ce qu'un operateur a
+// encaisse lui-meme.
+export async function reclasserVentes(tenantId) {
+  if (!config.paym.clientId) return 0;
+  const { rowCount } = await pool.query(`
+    UPDATE orders o SET encaisse_par = 'service'
+      FROM routers r, tenants t
+     WHERE r.id = o.router_id AND t.id = r.tenant_id
+       AND t.id = $1
+       AND o.encaisse_par = 'operateur'
+       AND o.status IN ('PAID','DELIVERED')
+       AND t.paym_client_id = $2
+       AND NOT EXISTS (SELECT 1 FROM users u
+                        WHERE u.tenant_id = t.id AND u.platform_admin)`,
+    [tenantId, config.paym.clientId]);
+  return rowCount;
+}
+
 export async function soldesReversement() {
   const { rows } = await pool.query(`
     SELECT t.id, t.name, t.encaisse_par_service,

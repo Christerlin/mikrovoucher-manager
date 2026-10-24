@@ -24,7 +24,7 @@ import {
   lireReglages, ecrireReglages, appliquerTarifDefaut,
   gardenDuRouteur, listGardenService, ajouterGarden, supprimerGarden,
   setTenantEncaissement, compteReversement, enregistrerReversement,
-  soldesReversement,
+  soldesReversement, ventesAReclasser, reclasserVentes,
   listReversements,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
@@ -174,6 +174,9 @@ async function empreinteRouteur(routerId) {
 // a l'installation d'origine, dont les identifiants vivent dans
 // l'environnement — alors qu'elle encaisse tres bien.
 function encaissementPill(t) {
+  if (config.paym.clientId && t.paym_client_id === config.paym.clientId) {
+    return `<span class="pill wait" title="Ses ventes arrivent sur notre compte Pay'm">clé du service</span>`;
+  }
   if (t.encaisse_par_service) {
     return `<span class="pill wait" title="Ses ventes tombent sur notre compte et lui sont dues">encaissé par le service</span>`;
   }
@@ -246,9 +249,9 @@ adminRouter.post("/admin/premier-demarrage", requireAdmin, async (req, res) => {
 
 // ---------------------------------------------------------- plateforme ----
 adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, res) => {
-  const [orgs, invits, vue, relances, defaut, garden, soldes] = await Promise.all([
+  const [orgs, invits, vue, relances, defaut, garden, soldes, aReclasser] = await Promise.all([
     listTenants(), listInvitations(), tableauPlateforme(), aRelancer(),
-    lireReglages(), listGardenService(), soldesReversement(),
+    lireReglages(), listGardenService(), soldesReversement(), ventesAReclasser(),
   ]);
   const base = publicBase(req);
   const date = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "–");
@@ -350,6 +353,36 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
         <div class="kpi-value">${vue.en_retard + vue.bientot}</div>
         <div class="kpi-detail">${vue.en_retard} en retard</div></div>
     </div>
+
+    ${aReclasser.length ? `
+    <div class="card" style="border-color:var(--warn)">
+      <h2 style="margin-top:0;color:var(--warn)">Ventes à rattacher</h2>
+      <p class="sub" style="margin:0 0 12px">Ces organisations encaissent avec
+      <strong>votre</strong> clé Pay'm, mais leurs ventes passées sont encore
+      comptées comme les leurs : l'argent est arrivé chez vous sans que le
+      registre le sache. Les rattacher les fera apparaître dans les soldes
+      ci-dessous, donc dans ce que vous leur devez.</p>
+      <table>
+        <tr><th>Organisation</th><th class="num">Ventes</th>
+            <th class="num">Montant</th><th></th></tr>
+        ${aReclasser.map((r) => `
+          <tr>
+            <td><strong>${esc(r.name)}</strong></td>
+            <td class="num">${r.ventes}</td>
+            <td class="num"><strong>${r.montant} HTG</strong></td>
+            <td style="text-align:right">
+              <form method="post" action="/admin/plateforme/${r.id}/reclasser" style="margin:0"
+                    data-confirm="Rattacher ${r.ventes} vente(s), soit ${r.montant} HTG, à ce que vous devez à ${esc(r.name)} ?">
+                <button type="submit">Rattacher</button>
+              </form>
+            </td>
+          </tr>`).join("")}
+      </table>
+      <p class="sub" style="margin:12px 0 0">À ne faire que si ces ventes sont
+      bien tombées sur votre compte. Seules celles des organisations qui
+      portent votre clé sont concernées ; les ventes à venir se rattachent
+      toutes seules.</p>
+    </div>` : ""}
 
     ${soldes.length ? `
     <div class="card" style="border-color:${totalDu > 0 ? "var(--warn)" : "var(--line)"}">
@@ -678,6 +711,13 @@ adminRouter.post("/admin/plateforme/:id/encaissement", requireAdmin, requirePlat
   res.redirect(`/admin/plateforme/${id}?msg=` + encodeURIComponent(par
     ? "Les ventes à venir seront encaissées par le service et lui seront dues."
     : "Les ventes à venir seront encaissées par l'opérateur."));
+});
+
+adminRouter.post("/admin/plateforme/:id/reclasser", requireAdmin, requirePlatform, async (req, res) => {
+  const n = await reclasserVentes(Number(req.params.id));
+  res.redirect("/admin/plateforme?msg=" + encodeURIComponent(n === 0
+    ? "Aucune vente à rattacher."
+    : `${n} vente(s) rattachée(s). Elles apparaissent dans les soldes.`));
 });
 
 adminRouter.post("/admin/plateforme/:id/reversement", requireAdmin, requirePlatform, async (req, res) => {

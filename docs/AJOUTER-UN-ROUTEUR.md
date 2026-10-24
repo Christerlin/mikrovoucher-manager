@@ -513,6 +513,14 @@ résultat de son côté. Le retour est un confort, pas une dépendance.
 
 Quand le service encaisse pour un opérateur — le temps qu'il obtienne son
 propre compte Pay'm — ses ventes tombent sur notre compte et lui sont dues.
+
+C'est **déduit de la clé employée** : si une organisation porte la clé Pay'm du
+service, ses ventes arrivent chez nous, donc elles lui sont dues. Rien à
+déclarer. Votre propre organisation est exclue : ses ventes sont les vôtres.
+
+Les ventes antérieures à cette règle apparaissent dans **Ventes à rattacher**,
+avec leur nombre et leur montant. Le bouton les fait entrer dans les soldes.
+Seules celles des organisations qui portent votre clé sont proposées.
 La page **Plateforme** affiche, pour chacun : encaissé, déjà reversé, reste à
 rendre, plus un total en tête. Une dette qu'il faut ouvrir dix fiches pour
 connaître ne se règle pas.

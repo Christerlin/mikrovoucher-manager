@@ -475,6 +475,38 @@ export async function compteReversement(tenantId) {
   return { ...r, reste: r.encaisse - r.reverse };
 }
 
+// Soldes de tous les clients d'un coup. La page Plateforme en a besoin : une
+// dette qu'il faut ouvrir dix fiches pour connaitre ne se regle pas.
+export async function soldesReversement() {
+  const { rows } = await pool.query(`
+    SELECT t.id, t.name, t.encaisse_par_service,
+           COALESCE(v.encaisse, 0)::int AS encaisse,
+           COALESCE(v.ventes, 0)::int   AS ventes,
+           COALESCE(rv.reverse, 0)::int AS reverse,
+           (COALESCE(v.encaisse, 0) - COALESCE(rv.reverse, 0))::int AS reste,
+           v.derniere_vente, rv.dernier_reversement
+      FROM tenants t
+      LEFT JOIN (
+        SELECT r.tenant_id, SUM(o.amount_htg) AS encaisse, COUNT(*) AS ventes,
+               MAX(o.created_at) AS derniere_vente
+          FROM orders o JOIN routers r ON r.id = o.router_id
+         WHERE o.encaisse_par = 'service' AND o.status IN ('PAID','DELIVERED')
+         GROUP BY r.tenant_id
+      ) v ON v.tenant_id = t.id
+      LEFT JOIN (
+        SELECT tenant_id, SUM(montant_htg) AS reverse,
+               MAX(created_at) AS dernier_reversement
+          FROM reversements GROUP BY tenant_id
+      ) rv ON rv.tenant_id = t.id
+     -- On garde aussi ceux dont le solde est nul mais qui ont un historique :
+     -- « plus rien a rendre » est une information, pas une absence.
+     WHERE t.encaisse_par_service
+        OR COALESCE(v.encaisse, 0) > 0
+        OR COALESCE(rv.reverse, 0) > 0
+     ORDER BY reste DESC, t.name`);
+  return rows;
+}
+
 export async function enregistrerReversement({ tenantId, montantHtg, methode, note }) {
   const { rows } = await pool.query(
     `INSERT INTO reversements (tenant_id, montant_htg, methode, note)

@@ -24,6 +24,7 @@ import {
   lireReglages, ecrireReglages, appliquerTarifDefaut,
   gardenDuRouteur, listGardenService, ajouterGarden, supprimerGarden,
   setTenantEncaissement, compteReversement, enregistrerReversement,
+  soldesReversement,
   listReversements,
   listUsers, createUser, getUserById, getUserByEmail, updateUser,
   deleteUser, setUserPassword, verifierMotDePasse, compterUtilisateurs,
@@ -245,9 +246,9 @@ adminRouter.post("/admin/premier-demarrage", requireAdmin, async (req, res) => {
 
 // ---------------------------------------------------------- plateforme ----
 adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, res) => {
-  const [orgs, invits, vue, relances, defaut, garden] = await Promise.all([
+  const [orgs, invits, vue, relances, defaut, garden, soldes] = await Promise.all([
     listTenants(), listInvitations(), tableauPlateforme(), aRelancer(),
-    lireReglages(), listGardenService(),
+    lireReglages(), listGardenService(), soldesReversement(),
   ]);
   const base = publicBase(req);
   const date = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : "–");
@@ -298,6 +299,9 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
       </td>
     </tr>`).join("");
 
+  // Ce que le service doit, tous clients confondus.
+  const totalDu = soldes.reduce((t, s) => t + Math.max(0, s.reste), 0);
+
   const lignesRelance = relances.map((r) => {
     const du = r.prix_base_htg + r.prix_routeur_htg * r.routeurs;
     const j = r.jours;
@@ -337,10 +341,65 @@ adminRouter.get("/admin/plateforme", requireAdmin, requirePlatform, async (req, 
       <div class="kpi"><div class="kpi-label">Encaissé ce mois</div>
         <div class="kpi-value">${vue.mois_htg}<span class="kpi-unit">HTG</span></div>
         <div class="kpi-detail">${vue.mois_n} règlement(s)</div></div>
+      ${totalDu > 0 ? `
+      <div class="kpi" style="border-color:var(--warn)">
+        <div class="kpi-label">À rendre aux clients</div>
+        <div class="kpi-value">${totalDu}<span class="kpi-unit">HTG</span></div>
+        <div class="kpi-detail">encaissé pour eux</div></div>` : ""}
       <div class="kpi"><div class="kpi-label">À relancer</div>
         <div class="kpi-value">${vue.en_retard + vue.bientot}</div>
         <div class="kpi-detail">${vue.en_retard} en retard</div></div>
     </div>
+
+    ${soldes.length ? `
+    <div class="card" style="border-color:${totalDu > 0 ? "var(--warn)" : "var(--line)"}">
+      <h2 style="margin-top:0${totalDu > 0 ? ";color:var(--warn)" : ""}">Argent encaissé pour les clients
+        ${totalDu > 0
+          ? `<span class="pill off">${totalDu} HTG à rendre</span>`
+          : `<span class="pill ok">tout est reversé</span>`}</h2>
+      <p class="sub" style="margin:0 0 12px">Ces ventes sont tombées sur
+      <strong>notre</strong> compte Pay'm parce que nous encaissons pour ces
+      opérateurs. L'argent leur appartient. Tenir le compte de quelqu'un
+      d'autre n'est pas neutre : à faire le temps qu'il obtienne son propre
+      compte, pas comme arrangement durable.</p>
+      <table>
+        <tr><th>Organisation</th><th class="num">Encaissé</th>
+            <th class="num">Reversé</th><th class="num">Reste à rendre</th>
+            <th>Dernier reversement</th><th></th></tr>
+        ${soldes.map((s) => `
+          <tr>
+            <td><a href="/admin/plateforme/${s.id}"><strong>${esc(s.name)}</strong></a>
+              ${s.encaisse_par_service ? "" : `<div style="font-size:12px;color:var(--ink-soft)">encaisse lui-même désormais</div>`}</td>
+            <td class="num">${s.encaisse} HTG
+              <div style="font-size:12px;color:var(--ink-soft)">${s.ventes} vente(s)</div></td>
+            <td class="num">${s.reverse} HTG</td>
+            <td class="num">${s.reste > 0
+                ? `<strong style="color:var(--warn)">${s.reste} HTG</strong>`
+                : `<span style="color:var(--ink-soft)">0</span>`}</td>
+            <td style="font-size:12px;color:var(--ink-soft)">${s.dernier_reversement
+                ? new Date(s.dernier_reversement).toLocaleDateString("fr-FR") : "jamais"}</td>
+            <td style="text-align:right">
+              ${s.reste > 0 ? `
+              <form method="post" action="/admin/plateforme/${s.id}/reversement"
+                    style="margin:0;display:flex;gap:6px;justify-content:flex-end"
+                    data-confirm="Enregistrer un reversement de ${s.reste} HTG à ${esc(s.name)} ? Son solde repassera à zéro.">
+                <input type="hidden" name="montant" value="${s.reste}">
+                <input type="hidden" name="retour" value="liste">
+                <select name="methode" style="padding:6px 8px">
+                  <option value="moncash">MonCash</option>
+                  <option value="natcash">NatCash</option>
+                  <option value="especes">Espèces</option>
+                  <option value="autre">Autre</option>
+                </select>
+                <button type="submit">Soldé</button>
+              </form>` : `<span style="color:var(--ink-soft);font-size:12px">à jour</span>`}
+            </td>
+          </tr>`).join("")}
+      </table>
+      <p class="sub" style="margin:12px 0 0">« Soldé » enregistre le montant
+      entier et ramène le solde à zéro. Pour un versement partiel, ouvrez la
+      fiche de l'organisation : le montant y est modifiable.</p>
+    </div>` : ""}
 
     ${lignesRelance ? `
     <div class="card" style="border-color:${vue.en_retard > 0 ? "var(--warn)" : "var(--line)"}">
@@ -624,13 +683,29 @@ adminRouter.post("/admin/plateforme/:id/encaissement", requireAdmin, requirePlat
 adminRouter.post("/admin/plateforme/:id/reversement", requireAdmin, requirePlatform, async (req, res) => {
   const id = Number(req.params.id);
   const b = req.body || {};
+  // Depuis la liste on revient a la liste : y renvoyer sur la fiche ferait
+  // perdre la vue d'ensemble a chaque reglement.
+  const vers = b.retour === "liste" ? "/admin/plateforme" : `/admin/plateforme/${id}`;
+  const retour = (m) => res.redirect(`${vers}?msg=` + encodeURIComponent(m));
+
   const montant = Math.max(0, Number(b.montant) || 0);
-  if (montant === 0) {
-    return res.redirect(`/admin/plateforme/${id}?msg=` + encodeURIComponent("Montant vide."));
+  if (montant === 0) return retour("Montant vide.");
+
+  // Le montant du bouton « Soldé » date de l'affichage de la page. Si un
+  // reversement a ete enregistre entre-temps — deuxieme clic, deuxieme
+  // onglet — le rejouer creerait une dette negative. On refuse de rendre
+  // plus que ce qui est du.
+  const avant = await compteReversement(id);
+  if (montant > avant.reste) {
+    return retour(avant.reste <= 0
+      ? "Rien à rendre à cette organisation : son solde est déjà à zéro."
+      : `Montant supérieur au solde (${avant.reste} HTG). Rien enregistré.`);
   }
+
   await enregistrerReversement({ tenantId: id, montantHtg: montant, methode: b.methode, note: b.note });
-  res.redirect(`/admin/plateforme/${id}?msg=` + encodeURIComponent(
-    `Reversement de ${montant} HTG enregistré.`));
+  const apres = await compteReversement(id);
+  return retour(`Reversement de ${montant} HTG enregistré.` +
+    (apres.reste > 0 ? ` Reste ${apres.reste} HTG.` : " Solde à zéro."));
 });
 
 adminRouter.post("/admin/plateforme/:id/tarif", requireAdmin, requirePlatform, async (req, res) => {

@@ -507,3 +507,24 @@ page neutre dit quoi faire plutôt que de rediriger vers un hôte inexistant.
 
 Le paiement aboutit de toute façon : l'onglet resté ouvert interroge le
 résultat de son côté. Le retour est un confort, pas une dépendance.
+
+
+## Argent encaissé pour les clients
+
+Quand le service encaisse pour un opérateur — le temps qu'il obtienne son
+propre compte Pay'm — ses ventes tombent sur notre compte et lui sont dues.
+La page **Plateforme** affiche, pour chacun : encaissé, déjà reversé, reste à
+rendre, plus un total en tête. Une dette qu'il faut ouvrir dix fiches pour
+connaître ne se règle pas.
+
+Le bouton **Soldé** enregistre le montant entier et ramène le solde à zéro.
+Pour un versement partiel, ouvrez la fiche de l'organisation : le montant y
+est modifiable.
+
+Un reversement supérieur au solde est refusé. Le montant du bouton date de
+l'affichage de la page ; sans ce garde-fou, un second clic ou un second onglet
+créerait une dette négative.
+
+Seules les ventes marquées comme encaissées par le service comptent. Celles
+qu'un opérateur encaisse lui-même ne nous ont jamais traversés, et il
+n'apparaît pas dans ce tableau.

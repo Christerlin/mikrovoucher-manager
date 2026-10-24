@@ -815,7 +815,11 @@ adminRouter.get("/admin/compte", requireAdmin, requireOwner, async (req, res) =>
   const t = await getTenant(req.user.tenant_id);
   if (!t) return res.redirect("/admin/routers");
   const ab = await etatAbonnement(req.user.tenant_id);
-  const compteRev = t.encaisse_par_service ? await compteReversement(req.user.tenant_id) : null;
+  // Toujours calcule, jamais conditionne au drapeau : la carte s'affiche des
+  // qu'il y a des ventes encaissees par le service ou un reversement. Sans
+  // cela, l'operateur ne verrait rien la ou nous voyons une dette — deux
+  // cotes en desaccord sur de l'argent, ce que ce registre doit empecher.
+  const compteRev = await compteReversement(req.user.tenant_id);
   const pose = Boolean(t.paym_client_id);
   // Meme nuance ici : « non configuré » alors que les ventes passent ferait
   // chercher une panne qui n'existe pas.

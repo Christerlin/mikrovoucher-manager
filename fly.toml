@@ -1,0 +1,33 @@
+app = "mikrovoucher"
+primary_region = "mia"          # Miami : le plus proche d'Haïti
+
+[build]
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+
+  # La machine ne doit JAMAIS s'arrêter. Les agents des routeurs appellent
+  # toutes les 15 s, mais surtout la réconciliation tourne en interne toutes
+  # les 2 minutes : une machine endormie ne livrerait plus les codes payés et
+  # ne retirerait plus les vouchers échus.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "15s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # 512 Mo et non 256 : le dépôt d'un dossier de portail passe par la mémoire
+  # (jusqu'à 60 fichiers de 2 Mo). En régime normal le service tient dans
+  # ~100 Mo, le reste n'est que du coussin pour ces pointes.
+  memory = "512mb"

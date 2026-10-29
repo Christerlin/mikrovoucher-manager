@@ -1,5 +1,9 @@
 app = "mikrovoucher"
-primary_region = "mia"          # Miami : le plus proche d'Haïti
+primary_region = "iad"          # Ashburn, Virginie
+# Miami aurait été le plus proche d'Haïti, mais Fly l'a retiré. Ashburn est le
+# point d'échange dominant de la côte est : le trafic haïtien y transite de
+# toute façon, et la base Neon est dans la même zone — ce qui compte davantage,
+# chaque appel faisant des requêtes SQL.
 
 [build]
 

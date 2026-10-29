@@ -42,26 +42,57 @@ fly certs add api.peycash.tech
 fly certs show api.peycash.tech   # donne les enregistrements DNS à créer
 ```
 
-## La bascule, sans rien couper
+## La bascule : deux cas
+
+Les routeurs portent l'adresse du gestionnaire **dans leur script d'agent**,
+les portails dans leur `config.js`, et le walled-garden dans ses règles. La
+manière de leur annoncer la nouvelle adresse dépend d'une seule chose : est-ce
+que l'ancien hébergeur répond encore ?
+
+### Cas A — l'ancien hébergeur répond
+
+C'est le cas confortable, et la raison d'être de la mise à jour d'agent.
+
+1. Sur l'ancien hébergeur, mettre `PUBLIC_URL` à la nouvelle adresse. Le
+   script qu'il sert aux agents la porte désormais.
+2. **Script agent → Mettre à jour le routeur**, un routeur à la fois. L'agent
+   va chercher son remplaçant, l'importe, et bascule. Le walled-garden suit
+   dans le même import.
+3. Vérifier **En ligne** et **Agent à jour** sur le tableau de bord servi par
+   le nouvel hébergeur, puis passer au suivant.
+4. Une fois tout le monde passé, éteindre l'ancien.
+
+Aucun déplacement : un routeur à l'autre bout du pays bascule depuis le
+navigateur. **Si l'ancien hébergeur n'est joignable que par intermittence —
+quota qui se réinitialise, service suspendu — il suffit qu'il réponde le temps
+d'un clic.** Profitez-en pour basculer, puis coupez-le aussitôt afin de ne pas
+regagner le quota pour rien.
+
+### Cas B — l'ancien hébergeur est mort
+
+Les agents ne peuvent plus rien récupérer de lui : la seule voie est
+l'importation manuelle, sur place, avec WinBox.
+
+1. Depuis le nouveau tableau de bord : **Script agent → Télécharger .rsc**
+2. Sur le routeur : glisser dans Files, puis `/import mikrovoucher-agent.rsc`
+3. Le routeur repasse En ligne en une quinzaine de secondes.
+
+C'est pour éviter ce déplacement qu'on ne laisse jamais mourir l'ancien
+hébergeur avant d'avoir basculé.
+
+## Ce qui reste à faire après la bascule
 
 Les routeurs portent l'adresse du gestionnaire **dans leur script d'agent**,
 les portails dans leur `config.js`, et le walled-garden dans ses règles.
 Changer l'adresse d'un coup les couperait tous. On s'en sert donc du mécanisme
 de mise à jour de l'agent, pendant que l'ancien hébergeur tourne encore.
 
-1. **Déployer sur Fly** et vérifier `https://api.peycash.tech/health`.
-2. Sur **Render**, mettre `PUBLIC_URL=https://api.peycash.tech`. Le script que
-   Render sert aux agents porte désormais la nouvelle adresse.
-3. Sur **un seul routeur** — le moins exposé — cliquer **Script agent → Mettre
-   à jour le routeur**. L'agent réimporte et bascule ; le walled-garden suit
-   dans le même import.
-4. Attendre une minute. Le routeur doit repasser **En ligne** et **Agent à
-   jour** sur le tableau de bord servi par Fly.
-5. Si c'est bon, faire les autres routeurs.
-6. Déposer le `config.js` mis à jour sur chaque portail (BACKEND_URL =
-   nouvelle adresse), puis **Pousser**.
-7. Changer l'URL de retour dans le compte Pay'm : `…/return`.
-8. Quand tous les routeurs sont en ligne sur Fly, éteindre Render.
+Une fois les agents passés :
+
+1. Déposer le `config.js` mis à jour sur chaque portail (BACKEND_URL =
+   nouvelle adresse), puis **Pousser** — cela se fait depuis le tableau de
+   bord, sans WinBox.
+2. Changer l'URL de retour dans le compte Pay'm : `…/return`.
 
 Les deux instances peuvent viser la même base en même temps sans danger : la
 prise d'une commande payée est atomique, et l'expiration des vouchers passe
